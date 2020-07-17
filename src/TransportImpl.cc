@@ -97,36 +97,42 @@ TransportImpl::processPackets()
     int numPackets = driver->receivePackets(MAX_BURST, packets);
     for (int i = 0; i < numPackets; ++i) {
         Driver::Packet* packet = packets[i];
-        assert(packet->length >=
-               Util::downCast<int>(sizeof(Protocol::Packet::CommonHeader)));
-        Protocol::Packet::CommonHeader* header =
-            static_cast<Protocol::Packet::CommonHeader*>(packet->payload);
-        switch (header->opcode) {
-            case Protocol::Packet::DATA:
-                receiver->handleDataPacket(packet, driver);
-                break;
-            case Protocol::Packet::GRANT:
-                sender->handleGrantPacket(packet, driver);
-                break;
-            case Protocol::Packet::DONE:
-                sender->handleDonePacket(packet, driver);
-                break;
-            case Protocol::Packet::RESEND:
-                sender->handleResendPacket(packet, driver);
-                break;
-            case Protocol::Packet::BUSY:
-                receiver->handleBusyPacket(packet, driver);
-                break;
-            case Protocol::Packet::PING:
-                receiver->handlePingPacket(packet, driver);
-                break;
-            case Protocol::Packet::UNKNOWN:
-                sender->handleUnknownPacket(packet, driver);
-                break;
-            case Protocol::Packet::ERROR:
-                sender->handleErrorPacket(packet, driver);
-                break;
-        }
+        processPacket(packet, packet->sourceIp);
+    }
+}
+
+void
+TransportImpl::processPacket(Driver::Packet* packet, IpAddress sourceIp)
+{
+    assert(packet->length >=
+           Util::downCast<int>(sizeof(Protocol::Packet::CommonHeader)));
+    Protocol::Packet::CommonHeader* header =
+        static_cast<Protocol::Packet::CommonHeader*>(packet->payload);
+    switch (header->opcode) {
+        case Protocol::Packet::DATA:
+            receiver->handleDataPacket(packet, sourceIp);
+            break;
+        case Protocol::Packet::GRANT:
+            sender->handleGrantPacket(packet);
+            break;
+        case Protocol::Packet::DONE:
+            sender->handleDonePacket(packet);
+            break;
+        case Protocol::Packet::RESEND:
+            sender->handleResendPacket(packet);
+            break;
+        case Protocol::Packet::BUSY:
+            receiver->handleBusyPacket(packet);
+            break;
+        case Protocol::Packet::PING:
+            receiver->handlePingPacket(packet, sourceIp);
+            break;
+        case Protocol::Packet::UNKNOWN:
+            sender->handleUnknownPacket(packet);
+            break;
+        case Protocol::Packet::ERROR:
+            sender->handleErrorPacket(packet);
+            break;
     }
 }
 
