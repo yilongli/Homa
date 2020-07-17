@@ -46,12 +46,12 @@ class Sender {
                     uint64_t messageTimeoutCycles, uint64_t pingIntervalCycles);
     virtual ~Sender();
 
-    virtual Homa::OutMessage* allocMessage();
-    virtual void handleDonePacket(Driver::Packet* packet, Driver* driver);
-    virtual void handleResendPacket(Driver::Packet* packet, Driver* driver);
-    virtual void handleGrantPacket(Driver::Packet* packet, Driver* driver);
-    virtual void handleUnknownPacket(Driver::Packet* packet, Driver* driver);
-    virtual void handleErrorPacket(Driver::Packet* packet, Driver* driver);
+    virtual Homa::OutMessage* allocMessage(uint16_t sourcePort);
+    virtual void handleDonePacket(Driver::Packet* packet);
+    virtual void handleResendPacket(Driver::Packet* packet);
+    virtual void handleGrantPacket(Driver::Packet* packet);
+    virtual void handleUnknownPacket(Driver::Packet* packet);
+    virtual void handleErrorPacket(Driver::Packet* packet);
     virtual void poll();
     virtual uint64_t checkTimeouts();
 
@@ -96,7 +96,7 @@ class Sender {
         Protocol::MessageId id;
 
         /// Contains destination address this message.
-        Driver::Address destination;
+        SocketAddress destination;
 
         /// Handle to the queue Message for access to the packets that will
         /// be sent.  This member documents that the packets are logically owned
@@ -131,13 +131,14 @@ class Sender {
         /**
          * Construct an Message.
          */
-        explicit Message(Sender* sender, Driver* driver)
+        explicit Message(Sender* sender, uint16_t sourcePort)
             : sender(sender)
-            , driver(driver)
+            , driver(sender->driver)
             , TRANSPORT_HEADER_LENGTH(sizeof(Protocol::Packet::DataHeader))
             , PACKET_DATA_LENGTH(driver->getMaxPayloadSize() -
                                  TRANSPORT_HEADER_LENGTH)
             , id(0, 0)
+            , source{driver->getLocalAddress(), sourcePort}
             , destination()
             , start(0)
             , messageLength(0)
@@ -159,7 +160,7 @@ class Sender {
         virtual void prepend(const void* source, size_t count);
         virtual void release();
         virtual void reserve(size_t count);
-        virtual void send(Driver::Address destination);
+        virtual void send(SocketAddress destination);
 
       private:
         /// Define the maximum number of packets that a message can hold.
@@ -185,8 +186,11 @@ class Sender {
         /// Contains the unique identifier for this message.
         Protocol::MessageId id;
 
-        /// Contains destination address this message.
-        Driver::Address destination;
+        /// Contains source address of this message.
+        SocketAddress source;
+
+        /// Contains destination address of this message.
+        SocketAddress destination;
 
         /// First byte where data is or will go if empty.
         int start;
@@ -378,7 +382,7 @@ class Sender {
         Protocol::MessageId::Hasher hasher;
     };
 
-    void sendMessage(Sender::Message* message, Driver::Address destination);
+    void sendMessage(Sender::Message* message, SocketAddress destination);
     void cancelMessage(Sender::Message* message);
     void dropMessage(Sender::Message* message);
     uint64_t checkMessageTimeouts();
