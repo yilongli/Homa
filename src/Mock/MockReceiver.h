@@ -37,7 +37,8 @@ class MockReceiver : public Core::Receiver {
     {}
 
     MOCK_METHOD(void, handleDataPacket,
-                (Driver::Packet* packet, IpAddress sourceIp), (override));
+                (Driver::Packet* packet, IpAddress sourceIp, Mailbox* mailbox),
+                (override));
     MOCK_METHOD(void, handleBusyPacket, (Driver::Packet* packet), (override));
     MOCK_METHOD(void, handlePingPacket,
                 (Driver::Packet* packet, IpAddress sourceIp), (override));

@@ -18,31 +18,13 @@
 
 #include <string>
 
+#include "Homa/BaseTypes.h"
 #include "Homa/Exception.h"
 
 namespace Homa {
 
 /// IPv4 address in host byte order.
 using IpAddress = uint32_t;
-
-/**
- * Represents a packet of data that can be send or is received over the network.
- * A Packet logically contains only the transport-layer (L4) Homa header in
- * addition to application data.
- *
- * This struct specifies the minimal object layout of a packet that the core
- * Homa protocol depends on (e.g., Homa::Core::{Sender, Receiver}); this is
- * useful for applications that only want to use the transport layer of this
- * library and have their own infrastructures for sending and receiving packets.
- */
-struct PacketSpec {
-    /// Pointer to an array of bytes containing the payload of this Packet.
-    /// This array is valid until the Packet is released back to the Driver.
-    void* payload;
-
-    /// Number of bytes in the payload.
-    int32_t length;
-}  __attribute__((packed));
 
 /**
  * Used by Homa::Transport to send and receive unreliable datagrams.  Provides

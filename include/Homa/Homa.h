@@ -122,6 +122,8 @@ class InMessage {
      * access this message following this call.
      */
     virtual void release() = 0;
+
+    friend struct LowLevelAPI;
 };
 
 /**
@@ -134,14 +136,7 @@ class OutMessage {
     /**
      * Defines the possible states of an OutMessage.
      */
-    enum class Status {
-        NOT_STARTED,  //< The sending of this message has not started.
-        IN_PROGRESS,  //< The message is in the process of being sent.
-        CANCELED,     //< The message was canceled while still IN_PROGRESS.
-        SENT,         //< The message has been completely sent.
-        COMPLETED,    //< The message has been received and processed.
-        FAILED,       //< The message failed to be delivered and processed.
-    };
+    using Status = OutMessageStatus;
 
     /**
      * Custom deleter for use with std::unique_ptr.
@@ -191,6 +186,17 @@ class OutMessage {
     virtual void prepend(const void* source, size_t count) = 0;
 
     /**
+     * Register a callback function to be invoked when the status of this
+     * message reaches the end states.
+     *
+     * @param func
+     *      The callback function
+     * @param data
+     *      Argument to the callback function
+     */
+    virtual void registerCallback(void (*func) (void*), void* data) = 0;
+
+    /**
      * Reserve a number of bytes at the beginning of the Message.
      *
      * The reserved space is used when bytes are prepended to the Message.
@@ -221,6 +227,33 @@ class OutMessage {
      * access this message following this call.
      */
     virtual void release() = 0;
+
+    friend struct LowLevelAPI;
+};
+
+/**
+ * Application-specific endpoint used to hold ingress messages temporarily
+ * before they can be processed.
+ *
+ * By default, Hom transport uses a global queue to store all ingress messages
+ * that are not yet processed, and Transport::receive() consumes messages from
+ * this queue by polling. In contrast, app-specific mailboxes provide a means
+ * to receive message that is more reactive and efficient: message delivery is
+ * triggered by ingress packets and bypasses the global message queue.
+ */
+struct Mailbox {
+
+    /**
+     * Deliver an ingress message to this mailbox.
+     *
+     * @param message
+     *      An ingress message just completed by the transport
+     * @param ip
+     *      IP address of the message sender
+     * @param port
+     *      Port number of the message sender
+     */
+    virtual void deliver(InMessage* message, uint32_t ip, uint16_t port) = 0;
 };
 
 /**
@@ -286,6 +319,36 @@ class Transport {
      * Return this transport's unique identifier.
      */
     virtual uint64_t getId() = 0;
+
+  private:
+
+    /**
+     * Process any timeouts that have expired.
+     *
+     * This method must be called periodically to ensure timely handling of
+     * expired timeouts.
+     *
+     * @return
+     *      The rdtsc cycle time when this method should be called again.
+     */
+    virtual uint64_t checkTimeouts() = 0;
+
+    /**
+     * Handle an ingress packet by running it through the transport protocol
+     * stack.
+     *
+     * \param packet
+     *      The ingress packet.
+     * \param source
+     *      IpAddress of the socket from which the packet is sent.
+     * \param mailbox
+     *      (Optional) place to deliver the ingress message completed by
+     *      \p packet (if any)
+     */
+    virtual void processPacket(Driver::Packet* packet, IpAddress source,
+                               Mailbox* mailbox) = 0;
+
+    friend struct LowLevelAPI;
 };
 
 }  // namespace Homa

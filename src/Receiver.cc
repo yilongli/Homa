@@ -85,7 +85,8 @@ Receiver::~Receiver()
  *      Source IP address of the packet.
  */
 void
-Receiver::handleDataPacket(Driver::Packet* packet, IpAddress sourceIp)
+Receiver::handleDataPacket(Driver::Packet* packet, IpAddress sourceIp,
+                           Mailbox* mailbox)
 {
     Protocol::Packet::DataHeader* header =
         static_cast<Protocol::Packet::DataHeader*>(packet->payload);
@@ -158,8 +159,13 @@ Receiver::handleDataPacket(Driver::Packet* packet, IpAddress sourceIp)
             // All message packets have been received.
             message->state.store(Message::State::COMPLETED);
             bucket->resendTimeouts.cancelTimeout(&message->resendTimeout);
-            SpinLock::Lock lock_received_messages(receivedMessages.mutex);
-            receivedMessages.queue.push_back(&message->receivedMessageNode);
+            if (mailbox) {
+                mailbox->deliver(message, message->source.ip,
+                                 message->source.port);
+            } else {
+                SpinLock::Lock lock_received_messages(receivedMessages.mutex);
+                receivedMessages.queue.push_back(&message->receivedMessageNode);
+            }
         }
     } else {
         // must be a duplicate packet; drop packet.

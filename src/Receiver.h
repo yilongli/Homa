@@ -47,7 +47,8 @@ class Receiver {
                       uint64_t messageTimeoutCycles,
                       uint64_t resendIntervalCycles);
     virtual ~Receiver();
-    virtual void handleDataPacket(Driver::Packet* packet, IpAddress sourceIp);
+    virtual void handleDataPacket(Driver::Packet* packet, IpAddress sourceIp,
+                                  Mailbox* mailbox = nullptr);
     virtual void handleBusyPacket(Driver::Packet* packet);
     virtual void handlePingPacket(Driver::Packet* packet, IpAddress sourceIp);
     virtual Homa::InMessage* receiveMessage();

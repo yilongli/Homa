@@ -78,6 +78,7 @@ add_library(Homa
     src/Policy.cc
     src/Receiver.cc
     src/Sender.cc
+    src/Shenango.cc
     src/StringUtil.cc
     src/ThreadId.cc
     src/TransportImpl.cc

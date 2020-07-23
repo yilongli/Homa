@@ -102,7 +102,7 @@ Sender::handleDonePacket(Driver::Packet* packet)
             // Expected behavior
             bucket->messageTimeouts.cancelTimeout(&message->messageTimeout);
             bucket->pingTimeouts.cancelTimeout(&message->pingTimeout);
-            message->state.store(OutMessage::Status::COMPLETED);
+            message->setStatus(OutMessage::Status::COMPLETED);
             break;
         case OutMessage::Status::CANCELED:
             // Canceled by the the application; just ignore the DONE.
@@ -255,7 +255,7 @@ Sender::handleGrantPacket(Driver::Packet* packet)
     bucket->messageTimeouts.setTimeout(&message->messageTimeout);
     bucket->pingTimeouts.setTimeout(&message->pingTimeout);
 
-    if (message->state.load() == OutMessage::Status::IN_PROGRESS) {
+    if (message->getStatus() == OutMessage::Status::IN_PROGRESS) {
         SpinLock::Lock lock_queue(queueMutex);
         QueuedMessageInfo* info = &message->queuedMessageInfo;
 
@@ -324,14 +324,14 @@ Sender::handleUnknownPacket(Driver::Packet* packet)
         if (message->numPackets > 1) {
             SpinLock::Lock lock_queue(queueMutex);
             QueuedMessageInfo* info = &message->queuedMessageInfo;
-            if (message->state == OutMessage::Status::IN_PROGRESS) {
+            if (message->getStatus() == OutMessage::Status::IN_PROGRESS) {
                 assert(sendQueue.contains(&info->sendQueueNode));
                 sendQueue.remove(&info->sendQueueNode);
             }
             assert(!sendQueue.contains(&info->sendQueueNode));
         }
 
-        message->state.store(OutMessage::Status::IN_PROGRESS);
+        message->setStatus(OutMessage::Status::IN_PROGRESS);
 
         // Get the current policy for unscheduled bytes.
         Policy::Unscheduled policy = policyManager->getUnscheduledPolicy(
@@ -362,7 +362,7 @@ Sender::handleUnknownPacket(Driver::Packet* packet)
             assert(dataPacket != nullptr);
             driver->sendPacket(dataPacket, message->destination.ip,
                     policy.priority);
-            message->state.store(OutMessage::Status::SENT);
+            message->setStatus(OutMessage::Status::SENT);
         } else {
             // Otherwise, queue the message to be sent in SRPT order.
             SpinLock::Lock lock_queue(queueMutex);
@@ -423,7 +423,7 @@ Sender::handleErrorPacket(Driver::Packet* packet)
             // Message was sent and a failure notification was received.
             bucket->messageTimeouts.cancelTimeout(&message->messageTimeout);
             bucket->pingTimeouts.cancelTimeout(&message->pingTimeout);
-            message->state.store(OutMessage::Status::FAILED);
+            message->setStatus(OutMessage::Status::FAILED);
             break;
         case OutMessage::Status::CANCELED:
             // Canceled by the the application; just ignore the ERROR.
@@ -561,7 +561,29 @@ Sender::Message::cancel()
 OutMessage::Status
 Sender::Message::getStatus() const
 {
-    return state.load();
+    return state.load(std::memory_order_acquire);
+}
+
+/**
+ * Change the current state of this message and invoke callback if necessary.
+ *
+ * @param newStatus
+ *      The new state of the message
+ */
+void
+Sender::Message::setStatus(OutMessage::Status newStatus)
+{
+    state.store(newStatus, std::memory_order_release);
+    if (callback) {
+        switch (newStatus) {
+            case OutMessage::Status::CANCELED:
+            case OutMessage::Status::COMPLETED:
+            case OutMessage::Status::FAILED:
+                callback(callbackData);
+            default:
+                break;
+        }
+    }
 }
 
 /**
@@ -592,6 +614,16 @@ Sender::Message::prepend(const void* source, size_t count)
         packetIndex++;
         packetOffset = 0;
     }
+}
+
+/**
+ * @copydoc Homa::OutMessage::registerCallback()
+ */
+void
+Sender::Message::registerCallback(void (*func) (void*), void* data)
+{
+    callback = func;
+    callbackData = data;
 }
 
 /**
@@ -719,7 +751,7 @@ Sender::sendMessage(Sender::Message* message, SocketAddress destination)
 
     message->id = id;
     message->destination = destination;
-    message->state.store(OutMessage::Status::IN_PROGRESS);
+    message->setStatus(OutMessage::Status::IN_PROGRESS);
 
     int actualMessageLen = 0;
     // fill out metadata.
@@ -761,7 +793,7 @@ Sender::sendMessage(Sender::Message* message, SocketAddress destination)
         Driver::Packet* packet = message->getPacket(0);
         assert(packet != nullptr);
         driver->sendPacket(packet, message->destination.ip, policy.priority);
-        message->state.store(OutMessage::Status::SENT);
+        message->setStatus(OutMessage::Status::SENT);
     } else {
         // Otherwise, queue the message to be sent in SRPT order.
         SpinLock::Lock lock_queue(queueMutex);
@@ -798,18 +830,18 @@ Sender::cancelMessage(Sender::Message* message)
         bucket->messageTimeouts.cancelTimeout(&message->messageTimeout);
         bucket->pingTimeouts.cancelTimeout(&message->pingTimeout);
         if (message->numPackets > 1 &&
-            message->state == OutMessage::Status::IN_PROGRESS) {
+            message->getStatus() == OutMessage::Status::IN_PROGRESS) {
             // Check to see if the message needs to be dequeued.
             SpinLock::Lock lock_queue(queueMutex);
             // Recheck state with lock in case it change right before this.
-            if (message->state == OutMessage::Status::IN_PROGRESS) {
+            if (message->getStatus() == OutMessage::Status::IN_PROGRESS) {
                 QueuedMessageInfo* info = &message->queuedMessageInfo;
                 assert(sendQueue.contains(&info->sendQueueNode));
                 sendQueue.remove(&info->sendQueueNode);
             }
         }
         bucket->messages.remove(&message->bucketNode);
-        message->state.store(OutMessage::Status::CANCELED);
+        message->setStatus(OutMessage::Status::CANCELED);
     }
 }
 
@@ -859,8 +891,8 @@ Sender::checkMessageTimeouts()
                 break;
             }
             // Found expired timeout.
-            if (message->state != OutMessage::Status::COMPLETED) {
-                message->state.store(OutMessage::Status::FAILED);
+            if (message->getStatus() != OutMessage::Status::COMPLETED) {
+                message->setStatus(OutMessage::Status::FAILED);
             }
             bucket->messageTimeouts.cancelTimeout(&message->messageTimeout);
             bucket->pingTimeouts.cancelTimeout(&message->pingTimeout);
@@ -902,8 +934,8 @@ Sender::checkPingTimeouts()
                 break;
             }
             // Found expired timeout.
-            if (message->state == OutMessage::Status::COMPLETED ||
-                message->state == OutMessage::Status::FAILED) {
+            if (message->getStatus() == OutMessage::Status::COMPLETED ||
+                message->getStatus() == OutMessage::Status::FAILED) {
                 bucket->pingTimeouts.cancelTimeout(&message->pingTimeout);
                 continue;
             } else {
@@ -950,7 +982,7 @@ Sender::trySend()
     auto it = sendQueue.begin();
     while (it != sendQueue.end()) {
         Message& message = *it;
-        assert(message.state.load() == OutMessage::Status::IN_PROGRESS);
+        assert(message.getStatus() == OutMessage::Status::IN_PROGRESS);
         QueuedMessageInfo* info = &message.queuedMessageInfo;
         assert(info->packetsGranted <= info->packets->numPackets);
         while (info->packetsSent < info->packetsGranted) {
@@ -977,7 +1009,7 @@ Sender::trySend()
         }
         if (info->packetsSent >= info->packets->numPackets) {
             // We have finished sending the message.
-            message.state.store(OutMessage::Status::SENT);
+            message.setStatus(OutMessage::Status::SENT);
             it = sendQueue.remove(it);
         } else if (info->packetsSent >= info->packetsGranted) {
             // We have sent every granted packet.

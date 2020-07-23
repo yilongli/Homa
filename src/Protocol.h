@@ -37,6 +37,11 @@ namespace Protocol {
  * A unique identifier for a Message sent or received by the transport.
  */
 struct MessageId {
+    // TODO: fit MessageId into one 64-bit integer? faster and can be used
+    // directly as "id" in homa_{send/recv/reply} api
+    // uint16_t transportId;
+    // uint64_t sequence:48;
+
     uint64_t transportId;  ///< Uniquely identifies the sending transport for
                            ///< this message.
     uint64_t sequence;     ///< Sequence number for this message (unique for

@@ -74,14 +74,18 @@ TransportImpl::poll()
     receiver->poll();
 
     if (PerfUtils::Cycles::rdtsc() >= nextTimeoutCycles.load()) {
-        uint64_t requestedTimeoutCycles;
-        requestedTimeoutCycles = sender->checkTimeouts();
+        uint64_t requestedTimeoutCycles = checkTimeouts();
         nextTimeoutCycles.store(requestedTimeoutCycles);
-        requestedTimeoutCycles = receiver->checkTimeouts();
-        if (nextTimeoutCycles.load() > requestedTimeoutCycles) {
-            nextTimeoutCycles.store(requestedTimeoutCycles);
-        }
     }
+}
+
+/// See Homa::Transport::checkTimeouts()
+uint64_t
+TransportImpl::checkTimeouts()
+{
+    uint64_t requestedTimeoutCycles = std::min(sender->checkTimeouts(),
+            receiver->checkTimeouts());
+    return requestedTimeoutCycles;
 }
 
 /**
@@ -97,12 +101,13 @@ TransportImpl::processPackets()
     int numPackets = driver->receivePackets(MAX_BURST, packets);
     for (int i = 0; i < numPackets; ++i) {
         Driver::Packet* packet = packets[i];
-        processPacket(packet, packet->sourceIp);
+        processPacket(packet, packet->sourceIp, nullptr);
     }
 }
 
 void
-TransportImpl::processPacket(Driver::Packet* packet, IpAddress sourceIp)
+TransportImpl::processPacket(Driver::Packet* packet, IpAddress sourceIp,
+                             Mailbox* mailbox)
 {
     assert(packet->length >=
            Util::downCast<int>(sizeof(Protocol::Packet::CommonHeader)));
@@ -110,7 +115,7 @@ TransportImpl::processPacket(Driver::Packet* packet, IpAddress sourceIp)
         static_cast<Protocol::Packet::CommonHeader*>(packet->payload);
     switch (header->opcode) {
         case Protocol::Packet::DATA:
-            receiver->handleDataPacket(packet, sourceIp);
+            receiver->handleDataPacket(packet, sourceIp, mailbox);
             break;
         case Protocol::Packet::GRANT:
             sender->handleGrantPacket(packet);

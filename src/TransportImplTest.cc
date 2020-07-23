@@ -106,7 +106,7 @@ TEST_F(TransportImplTest, processPackets)
     static_cast<Protocol::Packet::DataHeader*>(dataPacket.payload)
         ->common.opcode = Protocol::Packet::DATA;
     packets[0] = &dataPacket;
-    EXPECT_CALL(*mockReceiver, handleDataPacket(Eq(&dataPacket), _));
+    EXPECT_CALL(*mockReceiver, handleDataPacket(Eq(&dataPacket), _, _));
 
     // Set GRANT packet
     Homa::Mock::MockDriver::MockPacket grantPacket {payload[1], 1024};

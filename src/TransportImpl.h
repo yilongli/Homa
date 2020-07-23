@@ -74,8 +74,10 @@ class TransportImpl : public Transport {
     }
 
   private:
+    uint64_t checkTimeouts() override;
     void processPackets();
-    void processPacket(Driver::Packet* packet, IpAddress source);
+    void processPacket(Driver::Packet* packet, IpAddress source,
+                       Mailbox* mailbox) override;
 
     /// Unique identifier for this transport.
     const std::atomic<uint64_t> transportId;
