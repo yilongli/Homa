@@ -25,9 +25,9 @@
 
 #include "ControlPacket.h"
 #include "Intrusive.h"
-#include "ObjectPool.h"
 #include "Policy.h"
 #include "Protocol.h"
+#include "ObjectAllocator.h"
 #include "SpinLock.h"
 #include "Timeout.h"
 #include "Util.h"
@@ -45,7 +45,8 @@ class Receiver {
   public:
     explicit Receiver(Driver* driver, Policy::Manager* policyManager,
                       uint64_t messageTimeoutCycles,
-                      uint64_t resendIntervalCycles);
+                      uint64_t resendIntervalCycles,
+                      ObjectAllocator* messageAllocator = nullptr);
     virtual ~Receiver();
     virtual void handleDataPacket(Driver::Packet* packet, IpAddress sourceIp,
                                   Mailbox* mailbox = nullptr);
@@ -451,7 +452,18 @@ class Receiver {
         Intrusive::List<Peer>::Node scheduledPeerNode;
     };
 
-    void dropMessage(Receiver::Message* message);
+    /**
+     * Allocate an incoming Message.  Pulled out to simplify unit testing.
+     */
+    template <typename... Args>
+    Message* allocateMessage(Args&&... args)
+    {
+        void* backing = messageAllocator->allocate();
+        return new (backing) Message(static_cast<Args&&>(args)...);
+    }
+
+    void destroyMessage(Message* message);
+    void dropMessage(Message* message);
     uint64_t checkMessageTimeouts();
     uint64_t checkResendTimeouts();
     void trySendGrants();
@@ -494,13 +506,8 @@ class Receiver {
     /// each other.
     std::atomic_flag granting = ATOMIC_FLAG_INIT;
 
-    /// Used to allocate Message objects.
-    struct {
-        /// Protects the messageAllocator.pool
-        SpinLock mutex;
-        /// Pool from which Message objects can be allocated.
-        ObjectPool<Message> pool;
-    } messageAllocator;
+    /// Used to allocate memory for Message objects.
+    std::unique_ptr<ObjectAllocator> messageAllocator;
 };
 
 }  // namespace Core

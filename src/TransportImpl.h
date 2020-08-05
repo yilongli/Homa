@@ -25,7 +25,6 @@
 #include <unordered_set>
 #include <vector>
 
-#include "ObjectPool.h"
 #include "Policy.h"
 #include "Receiver.h"
 #include "Sender.h"

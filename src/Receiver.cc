@@ -17,6 +17,7 @@
 
 #include <Cycles.h>
 
+#include "Debug.h"
 #include "Util.h"
 
 namespace Homa {
@@ -35,9 +36,12 @@ namespace Core {
  * @param resendIntervalCycles
  *      Number of cycles of inactivity to wait between requesting retransmission
  *      of un-received parts of a message.
+ * @param messageAllocator
+ *      Allocates memory for incoming messages.
  */
 Receiver::Receiver(Driver* driver, Policy::Manager* policyManager,
-                   uint64_t messageTimeoutCycles, uint64_t resendIntervalCycles)
+                   uint64_t messageTimeoutCycles, uint64_t resendIntervalCycles,
+                   ObjectAllocator* messageAllocator)
     : driver(driver)
     , policyManager(policyManager)
     , messageBuckets(messageTimeoutCycles, resendIntervalCycles)
@@ -45,7 +49,8 @@ Receiver::Receiver(Driver* driver, Policy::Manager* policyManager,
     , scheduledPeers()
     , receivedMessages()
     , granting()
-    , messageAllocator()
+    , messageAllocator(messageAllocator ? messageAllocator :
+                       new SimpleObjectAllocator(sizeof(Message)))
 {}
 
 /**
@@ -68,10 +73,7 @@ Receiver::~Receiver()
             bucket->messageTimeouts.cancelTimeout(&message->messageTimeout);
             bucket->resendTimeouts.cancelTimeout(&message->resendTimeout);
             iit = bucket->messages.remove(iit);
-            {
-                SpinLock::Lock lock_allocator(messageAllocator.mutex);
-                messageAllocator.pool.destroy(message);
-            }
+            destroyMessage(message);
         }
     }
 }
@@ -100,16 +102,12 @@ Receiver::handleDataPacket(Driver::Packet* packet, IpAddress sourceIp,
         // New message
         int messageLength = header->totalLength;
         int numUnscheduledPackets = header->unscheduledIndexLimit;
-        {
-            SpinLock::Lock lock_allocator(messageAllocator.mutex);
-            SocketAddress srcAddress = {
-                .ip = sourceIp,
-                .port = be16toh(header->common.sport)
-            };
-            message = messageAllocator.pool.construct(
-                this, driver, dataHeaderLength, messageLength, id,
-                srcAddress, numUnscheduledPackets);
-        }
+        SocketAddress srcAddress = {
+            .ip = sourceIp,
+            .port = be16toh(header->common.sport)
+        };
+        message = allocateMessage(this, driver, dataHeaderLength, messageLength,
+            id, srcAddress, numUnscheduledPackets);
 
         bucket->messages.push_back(&message->bucketNode);
         policyManager->signalNewMessage(message->source.ip,
@@ -493,6 +491,19 @@ Receiver::Message::setPacket(size_t index, Driver::Packet* packet)
 }
 
 /**
+ * Destroy a Message object and return the memory to the allocator.
+ *
+ * @param message
+ *      Message which will be destroyed
+ */
+void
+Receiver::destroyMessage(Receiver::Message* message)
+{
+    message->~Message();
+    messageAllocator->release(message);
+}
+
+/**
  * Inform the Receiver that an Message returned by receiveMessage() is not
  * needed and can be dropped.
  *
@@ -520,10 +531,7 @@ Receiver::dropMessage(Receiver::Message* message)
             }
         }
         bucket->messages.remove(&message->bucketNode);
-        {
-            SpinLock::Lock lock_allocator(messageAllocator.mutex);
-            messageAllocator.pool.destroy(message);
-        }
+        destroyMessage(message);
     }
 }
 
@@ -583,10 +591,7 @@ Receiver::checkMessageTimeouts()
                 }
 
                 bucket->messages.remove(&message->bucketNode);
-                {
-                    SpinLock::Lock lock_allocator(messageAllocator.mutex);
-                    messageAllocator.pool.destroy(message);
-                }
+                destroyMessage(message);
             } else {
                 // Message timed out but we already made it available to the
                 // Transport; let the Transport know.

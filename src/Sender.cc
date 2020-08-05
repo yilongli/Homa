@@ -40,10 +40,12 @@ namespace Core {
  * @param pingIntervalCycles
  *      Number of cycles of inactivity to wait between checking on the liveness
  *      of an Sender::Message.
+ * @param messageAllocator
+ *      Allocates memory for incoming messages.
  */
 Sender::Sender(uint64_t transportId, Driver* driver,
                Policy::Manager* policyManager, uint64_t messageTimeoutCycles,
-               uint64_t pingIntervalCycles)
+               uint64_t pingIntervalCycles, ObjectAllocator* messageAllocator)
     : transportId(transportId)
     , driver(driver)
     , policyManager(policyManager)
@@ -54,7 +56,8 @@ Sender::Sender(uint64_t transportId, Driver* driver,
     , sendQueue()
     , sending()
     , sendReady(false)
-    , messageAllocator()
+    , messageAllocator(messageAllocator ? messageAllocator :
+                       new SimpleObjectAllocator(sizeof(Message)))
 {}
 
 /**
@@ -68,8 +71,8 @@ Sender::~Sender() {}
 Homa::OutMessage*
 Sender::allocMessage(uint16_t sourcePort)
 {
-    SpinLock::Lock lock_allocator(messageAllocator.mutex);
-    return messageAllocator.pool.construct(this, sourcePort);
+    void* backing = messageAllocator->allocate();
+    return new (backing) Message(this, sourcePort);
 }
 
 /**
@@ -855,8 +858,8 @@ void
 Sender::dropMessage(Sender::Message* message)
 {
     cancelMessage(message);
-    SpinLock::Lock lock_allocator(messageAllocator.mutex);
-    messageAllocator.pool.destroy(message);
+    message->~Message();
+    messageAllocator->release(message);
 }
 
 /**

@@ -122,10 +122,10 @@ struct VectorHandler {
 
 TEST_F(SenderTest, allocMessage)
 {
-    EXPECT_EQ(0U, sender->messageAllocator.pool.outstandingObjects);
+    EXPECT_EQ(0U, sender->messageAllocator->numOutstandingObjects());
     Sender::Message* message =
         dynamic_cast<Sender::Message*>(sender->allocMessage(0));
-    EXPECT_EQ(1U, sender->messageAllocator.pool.outstandingObjects);
+    EXPECT_EQ(1U, sender->messageAllocator->numOutstandingObjects());
 }
 
 TEST_F(SenderTest, handleDonePacket_basic)
@@ -1461,11 +1461,11 @@ TEST_F(SenderTest, dropMessage)
 {
     Sender::Message* message =
         dynamic_cast<Sender::Message*>(sender->allocMessage(0));
-    EXPECT_EQ(1U, sender->messageAllocator.pool.outstandingObjects);
+    EXPECT_EQ(1U, sender->messageAllocator->numOutstandingObjects());
 
     sender->dropMessage(message);
 
-    EXPECT_EQ(0U, sender->messageAllocator.pool.outstandingObjects);
+    EXPECT_EQ(0U, sender->messageAllocator->numOutstandingObjects());
 }
 
 TEST_F(SenderTest, checkMessageTimeouts_basic)

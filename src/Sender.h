@@ -24,7 +24,7 @@
 #include <unordered_map>
 
 #include "Intrusive.h"
-#include "ObjectPool.h"
+#include "ObjectAllocator.h"
 #include "Policy.h"
 #include "Protocol.h"
 #include "SpinLock.h"
@@ -43,7 +43,8 @@ class Sender {
   public:
     explicit Sender(uint64_t transportId, Driver* driver,
                     Policy::Manager* policyManager,
-                    uint64_t messageTimeoutCycles, uint64_t pingIntervalCycles);
+                    uint64_t messageTimeoutCycles, uint64_t pingIntervalCycles,
+                    ObjectAllocator* messageAllocator = nullptr);
     virtual ~Sender();
 
     virtual Homa::OutMessage* allocMessage(uint16_t sourcePort);
@@ -435,13 +436,8 @@ class Sender {
     /// if there is work to do is more efficient.
     std::atomic<bool> sendReady;
 
-    /// Used to allocate Message objects.
-    struct {
-        /// Protects the messageAllocator.pool
-        SpinLock mutex;
-        /// Pool allocator for Message objects.
-        ObjectPool<Message> pool;
-    } messageAllocator;
+    /// Used to allocate memory for Message objects.
+    std::unique_ptr<ObjectAllocator> messageAllocator;
 };
 
 }  // namespace Core
