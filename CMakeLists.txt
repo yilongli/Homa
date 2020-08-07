@@ -74,6 +74,7 @@ endif()
 add_library(Homa
     src/CodeLocation.cc
     src/Debug.cc
+    src/Driver.cc
     src/Homa.cc
     src/Policy.cc
     src/Receiver.cc
