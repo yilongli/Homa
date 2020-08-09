@@ -21,7 +21,7 @@
 
 #include <array>
 #include <atomic>
-#include <unordered_map>
+#include <bitset>
 
 #include "Intrusive.h"
 #include "ObjectPool.h"
@@ -52,8 +52,8 @@ class Sender {
     virtual void handleGrantPacket(Driver::Packet* packet);
     virtual void handleUnknownPacket(Driver::Packet* packet);
     virtual void handleErrorPacket(Driver::Packet* packet);
-    virtual void poll();
     virtual uint64_t checkTimeouts();
+    virtual void trySend();
 
   private:
     /// Forward declarations
@@ -126,13 +126,15 @@ class Sender {
      * Sender::Message objects are contained in the Transport::Op but should
      * only be accessed by the Sender.
      */
-    class Message : public Homa::OutMessage {
+    class Message final : public Homa::OutMessage {
       public:
         /**
          * Construct an Message.
          */
         explicit Message(Sender* sender, uint16_t sourcePort)
             : sender(sender)
+            , callback()
+            , callbackData()
             , driver(sender->driver)
             , TRANSPORT_HEADER_LENGTH(sizeof(Protocol::Packet::DataHeader))
             , PACKET_DATA_LENGTH(driver->getMaxPayloadSize() -
@@ -158,11 +160,14 @@ class Sender {
         virtual void cancel();
         virtual Status getStatus() const;
         virtual void prepend(const void* source, size_t count);
+        virtual void registerCallback(void (*func) (void*), void* data);
         virtual void release();
         virtual void reserve(size_t count);
         virtual void send(SocketAddress destination);
 
       private:
+        void setStatus(Status newStatus);
+
         /// Define the maximum number of packets that a message can hold.
         static const size_t MAX_MESSAGE_PACKETS = 1024;
 
@@ -171,6 +176,12 @@ class Sender {
 
         /// The Sender responsible for sending this message.
         Sender* const sender;
+
+        /// Callback function to invoke when _state_ reaches its end state.
+        void (*callback) (void*);
+
+        /// Input argument to _callback_.
+        void *callbackData;
 
         /// Driver from which packets were allocated and to which they should be
         /// returned when this message is no longer needed.
@@ -387,7 +398,6 @@ class Sender {
     void dropMessage(Sender::Message* message);
     uint64_t checkMessageTimeouts();
     uint64_t checkPingTimeouts();
-    void trySend();
 
     /// Transport identifier.
     const uint64_t transportId;

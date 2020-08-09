@@ -992,12 +992,6 @@ TEST_F(SenderTest, handleErrorPacket_noMessage)
     sender->handleErrorPacket(&mockPacket);
 }
 
-TEST_F(SenderTest, poll)
-{
-    // Nothing to test.
-    sender->poll();
-}
-
 TEST_F(SenderTest, checkTimeouts)
 {
     Sender::Message message(sender, 0);

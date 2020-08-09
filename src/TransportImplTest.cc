@@ -21,6 +21,7 @@
 #include "Mock/MockSender.h"
 #include "Protocol.h"
 #include "TransportImpl.h"
+#include "Homa/Utils/TransportPoller.h"
 #include "Tub.h"
 
 namespace Homa {
@@ -38,7 +39,8 @@ class TransportImplTest : public ::testing::Test {
   public:
     TransportImplTest()
         : mockDriver()
-        , transport(new TransportImpl(&mockDriver, 22))
+        , transport(new TransportImpl(&mockDriver, nullptr, 22))
+        , poller(transport)
         , mockSender(
               new NiceMock<Homa::Mock::MockSender>(22, &mockDriver, 0, 0))
         , mockReceiver(
@@ -59,6 +61,7 @@ class TransportImplTest : public ::testing::Test {
 
     NiceMock<Homa::Mock::MockDriver> mockDriver;
     TransportImpl* transport;
+    TransportPoller poller;
     NiceMock<Homa::Mock::MockSender>* mockSender;
     NiceMock<Homa::Mock::MockReceiver>* mockReceiver;
 };
@@ -66,34 +69,34 @@ class TransportImplTest : public ::testing::Test {
 TEST_F(TransportImplTest, poll)
 {
     EXPECT_CALL(mockDriver, receivePackets).WillOnce(Return(0));
-    EXPECT_CALL(*mockSender, poll).Times(1);
-    EXPECT_CALL(*mockReceiver, poll).Times(1);
+    EXPECT_CALL(*mockSender, trySend).Times(1);
+    EXPECT_CALL(*mockReceiver, trySendGrants).Times(1);
     EXPECT_CALL(*mockSender, checkTimeouts).WillOnce(Return(10000));
     EXPECT_CALL(*mockReceiver, checkTimeouts).WillOnce(Return(10100));
 
-    transport->poll();
+    poller.poll();
 
-    EXPECT_EQ(10000U, transport->nextTimeoutCycles);
+    EXPECT_EQ(10000U, poller.nextTimeoutCycles);
 
     EXPECT_CALL(mockDriver, receivePackets).WillOnce(Return(0));
-    EXPECT_CALL(*mockSender, poll).Times(1);
-    EXPECT_CALL(*mockReceiver, poll).Times(1);
+    EXPECT_CALL(*mockSender, trySend).Times(1);
+    EXPECT_CALL(*mockReceiver, trySendGrants).Times(1);
     EXPECT_CALL(*mockSender, checkTimeouts).WillOnce(Return(10200));
     EXPECT_CALL(*mockReceiver, checkTimeouts).WillOnce(Return(10100));
 
-    transport->poll();
+    poller.poll();
 
-    EXPECT_EQ(10100U, transport->nextTimeoutCycles);
+    EXPECT_EQ(10100U, poller.nextTimeoutCycles);
 
     EXPECT_CALL(mockDriver, receivePackets).WillOnce(Return(0));
-    EXPECT_CALL(*mockSender, poll).Times(1);
-    EXPECT_CALL(*mockReceiver, poll).Times(1);
+    EXPECT_CALL(*mockSender, trySend).Times(1);
+    EXPECT_CALL(*mockReceiver, trySendGrants).Times(1);
     EXPECT_CALL(*mockSender, checkTimeouts).Times(0);
     EXPECT_CALL(*mockReceiver, checkTimeouts).Times(0);
 
-    transport->poll();
+    poller.poll();
 
-    EXPECT_EQ(10100U, transport->nextTimeoutCycles);
+    EXPECT_EQ(10100U, poller.nextTimeoutCycles);
 }
 
 TEST_F(TransportImplTest, processPackets)
@@ -160,7 +163,7 @@ TEST_F(TransportImplTest, processPackets)
     EXPECT_CALL(mockDriver, receivePackets)
         .WillOnce(DoAll(SetArrayArgument<1>(packets, packets + 8), Return(8)));
 
-    transport->processPackets();
+    poller.processPackets();
 }
 
 }  // namespace

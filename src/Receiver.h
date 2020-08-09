@@ -20,6 +20,7 @@
 #include <Homa/Homa.h>
 
 #include <atomic>
+#include <bitset>
 #include <deque>
 #include <unordered_map>
 
@@ -43,16 +44,16 @@ namespace Core {
  */
 class Receiver {
   public:
-    explicit Receiver(Driver* driver, Policy::Manager* policyManager,
+    explicit Receiver(Driver* driver, MailboxDir* mailboxDir,
+                      Policy::Manager* policyManager,
                       uint64_t messageTimeoutCycles,
                       uint64_t resendIntervalCycles);
     virtual ~Receiver();
     virtual void handleDataPacket(Driver::Packet* packet, IpAddress sourceIp);
     virtual void handleBusyPacket(Driver::Packet* packet);
     virtual void handlePingPacket(Driver::Packet* packet, IpAddress sourceIp);
-    virtual Homa::InMessage* receiveMessage();
-    virtual void poll();
     virtual uint64_t checkTimeouts();
+    virtual void trySendGrants();
 
   private:
     // Forward declaration
@@ -118,7 +119,7 @@ class Receiver {
      * Represents an incoming message that is being assembled or being processed
      * by the application.
      */
-    class Message : public Homa::InMessage {
+    class Message final : public Homa::InMessage {
       public:
         /**
          * Defines the possible states of this Message.
@@ -154,7 +155,6 @@ class Receiver {
             // construction. See Message::occupied.
             , state(Message::State::IN_PROGRESS)
             , bucketNode(this)
-            , receivedMessageNode(this)
             , messageTimeout(this)
             , resendTimeout(this)
             , scheduledMessageInfo(this, messageLength)
@@ -166,6 +166,7 @@ class Receiver {
         virtual void fail() const;
         virtual size_t get(size_t offset, void* destination,
                            size_t count) const;
+        virtual SocketAddress getSourceAddress() const;
         virtual size_t length() const;
         virtual void strip(size_t count);
         virtual void release();
@@ -239,10 +240,6 @@ class Receiver {
         /// in one of the Receiver's MessageBuckets.  Access to this structure
         /// is protected by the associated MessageBucket::mutex;
         Intrusive::List<Message>::Node bucketNode;
-
-        /// Intrusive structure used by the Receiver to keep track of this
-        /// message when it has been completely received.
-        Intrusive::List<Message>::Node receivedMessageNode;
 
         /// Intrusive structure used by the Receiver to keep track when the
         /// receiving of this message should be considered failed.
@@ -453,7 +450,6 @@ class Receiver {
     void dropMessage(Receiver::Message* message);
     uint64_t checkMessageTimeouts();
     uint64_t checkResendTimeouts();
-    void trySendGrants();
     void schedule(Message* message, const SpinLock::Lock& lock);
     void unschedule(Message* message, const SpinLock::Lock& lock);
     void updateSchedule(Message* message, const SpinLock::Lock& lock);
@@ -464,6 +460,9 @@ class Receiver {
 
     /// Provider of network packet priority and grant policy decisions.
     Policy::Manager* const policyManager;
+
+    /// Records where to deliver the messages when they are completed.
+    MailboxDir* const mailboxDir;
 
     /// Tracks the set of inbound messages being received by this Receiver.
     MessageBucketMap messageBuckets;
@@ -479,14 +478,6 @@ class Receiver {
     /// List of peers with inbound messages that require grants to complete.
     /// Access is protected by the schedulerMutex.
     Intrusive::List<Peer> scheduledPeers;
-
-    /// Message objects to be processed by the transport.
-    struct {
-        /// Protects the receivedMessage.queue
-        SpinLock mutex;
-        /// List of completely received messages.
-        Intrusive::List<Message> queue;
-    } receivedMessages;
 
     /// True if the Receiver is executing trySendGrants(); false, otherwise.
     /// Used to prevent concurrent calls to trySendGrants() from blocking on
