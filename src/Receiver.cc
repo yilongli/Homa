@@ -17,6 +17,7 @@
 
 #include <Cycles.h>
 
+#include "Tub.h"
 #include "Util.h"
 
 namespace Homa {
@@ -27,6 +28,8 @@ namespace Core {
  *
  * @param driver
  *      The driver used to send and receive packets.
+ * @param mailboxDir
+ *      The mailbox directory used to lookup message destination.
  * @param policyManager
  *      Provides information about the grant and network priority policies.
  * @param messageTimeoutCycles
@@ -36,14 +39,15 @@ namespace Core {
  *      Number of cycles of inactivity to wait between requesting retransmission
  *      of un-received parts of a message.
  */
-Receiver::Receiver(Driver* driver, Policy::Manager* policyManager,
+Receiver::Receiver(Driver* driver, MailboxDir* mailboxDir,
+                   Policy::Manager* policyManager,
                    uint64_t messageTimeoutCycles, uint64_t resendIntervalCycles)
     : driver(driver)
     , policyManager(policyManager)
+    , mailboxDir(mailboxDir)
     , messageBuckets(messageTimeoutCycles, resendIntervalCycles)
     , schedulerMutex()
     , scheduledPeers()
-    , receivedMessages()
     , granting()
     , messageAllocator()
 {}
@@ -56,8 +60,6 @@ Receiver::~Receiver()
     schedulerMutex.lock();
     scheduledPeers.clear();
     peerTable.clear();
-    receivedMessages.mutex.lock();
-    receivedMessages.queue.clear();
     for (auto it = messageBuckets.buckets.begin();
          it != messageBuckets.buckets.end(); ++it) {
         MessageBucket* bucket = *it;
@@ -93,8 +95,9 @@ Receiver::handleDataPacket(Driver::Packet* packet, IpAddress sourceIp)
     Protocol::MessageId id = header->common.messageId;
 
     MessageBucket* bucket = messageBuckets.getBucket(id);
-    SpinLock::Lock lock_bucket(bucket->mutex);
-    Message* message = bucket->findMessage(id, lock_bucket);
+    Tub<SpinLock::Lock> lock_bucket;
+    lock_bucket.construct(bucket->mutex);
+    Message* message = bucket->findMessage(id, *lock_bucket);
     if (message == nullptr) {
         // New message
         int messageLength = header->totalLength;
@@ -158,14 +161,21 @@ Receiver::handleDataPacket(Driver::Packet* packet, IpAddress sourceIp)
             // All message packets have been received.
             message->state.store(Message::State::COMPLETED);
             bucket->resendTimeouts.cancelTimeout(&message->resendTimeout);
-            SpinLock::Lock lock_received_messages(receivedMessages.mutex);
-            receivedMessages.queue.push_back(&message->receivedMessageNode);
+            uint16_t dport = be16toh(header->common.prefix.dport);
+            Mailbox* mailbox = mailboxDir->open(dport);
+            if (mailbox) {
+                mailbox->deliver(message);
+                mailbox->close();
+            } else {
+                lock_bucket.destroy();
+                ERROR("Unable to deliver the message; message dropped");
+                dropMessage(message);
+            }
         }
     } else {
         // must be a duplicate packet; drop packet.
         driver->releasePackets(&packet, 1);
     }
-    return;
 }
 
 /**
@@ -245,29 +255,6 @@ Receiver::handlePingPacket(Driver::Packet* packet, IpAddress sourceIp)
             driver, sourceIp, id);
     }
     driver->releasePackets(&packet, 1);
-}
-
-/**
- * Return a handle to a new received Message.
- *
- * The Transport should regularly call this method to insure incoming messages
- * are processed.
- *
- * @return
- *      A new Message which has been received, if available; otherwise, nullptr.
- *
- * @sa dropMessage()
- */
-Homa::InMessage*
-Receiver::receiveMessage()
-{
-    SpinLock::Lock lock_received_messages(receivedMessages.mutex);
-    Message* message = nullptr;
-    if (!receivedMessages.queue.empty()) {
-        message = &receivedMessages.queue.front();
-        receivedMessages.queue.pop_front();
-    }
-    return message;
 }
 
 /**
@@ -411,6 +398,15 @@ Receiver::Message::get(size_t offset, void* destination, size_t count) const
         packetOffset = 0;
     }
     return bytesCopied;
+}
+
+/**
+ * @copydoc Homa::InMessage::getSourceAddress()
+ */
+SocketAddress
+Receiver::Message::getSourceAddress() const
+{
+    return source;
 }
 
 /**

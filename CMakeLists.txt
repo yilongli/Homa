@@ -76,6 +76,7 @@ add_library(Homa
     src/Debug.cc
     src/Driver.cc
     src/Homa.cc
+    src/SimpleMailboxDir.cc
     src/Policy.cc
     src/Receiver.cc
     src/Sender.cc

@@ -14,16 +14,10 @@
  */
 
 #include "TransportImpl.h"
-
-#include <algorithm>
-#include <memory>
-#include <utility>
-
 #include "Cycles.h"
 #include "Protocol.h"
 
-namespace Homa {
-namespace Core {
+namespace Homa::Core {
 
 // Basic timeout unit.
 const uint64_t BASE_TIMEOUT_US = 2000;
@@ -39,11 +33,14 @@ const uint64_t RESEND_INTERVAL_US = BASE_TIMEOUT_US;
  *
  * @param driver
  *      Driver with which this transport should send and receive packets.
+ * @param mailboxDir
+ *      Mailbox directory with which this transport should deliver messages.
  * @param transportId
  *      This transport's unique identifier in the group of transports among
  *      which this transport will communicate.
  */
-TransportImpl::TransportImpl(Driver* driver, uint64_t transportId)
+TransportImpl::TransportImpl(Driver* driver, MailboxDir* mailboxDir,
+                             uint64_t transportId)
     : transportId(transportId)
     , driver(driver)
     , policyManager(new Policy::Manager(driver))
@@ -51,9 +48,10 @@ TransportImpl::TransportImpl(Driver* driver, uint64_t transportId)
                         PerfUtils::Cycles::fromMicroseconds(MESSAGE_TIMEOUT_US),
                         PerfUtils::Cycles::fromMicroseconds(PING_INTERVAL_US)))
     , receiver(
-          new Receiver(driver, policyManager.get(),
+          new Receiver(driver, mailboxDir, policyManager.get(),
                        PerfUtils::Cycles::fromMicroseconds(MESSAGE_TIMEOUT_US),
                        PerfUtils::Cycles::fromMicroseconds(RESEND_INTERVAL_US)))
+    , mailboxDir(mailboxDir)
     , nextTimeoutCycles(0)
 {}
 
@@ -61,6 +59,31 @@ TransportImpl::TransportImpl(Driver* driver, uint64_t transportId)
  * TransportImpl Destructor.
  */
 TransportImpl::~TransportImpl() = default;
+
+/// See Homa::Transport::free()
+void
+TransportImpl::free()
+{
+    // We simply call "delete this" here because the only way to instantiate
+    // a Core::TransportImpl instance is via "new" in Transport::create().
+    // An alternative would be to provide a static free() method that takes
+    // a pointer to Transport, the downside of this approach is that we must
+    // cast the argument to TransportImpl* because polymorphic deletion is
+    // disabled on the Transport interface.
+    delete this;
+}
+
+/// See Homa::Transport::open()
+Homa::unique_ptr<Socket>
+TransportImpl::open(uint16_t port)
+{
+    Mailbox* mailbox = mailboxDir->alloc(port);
+    if (!mailbox) {
+        return nullptr;
+    }
+    SocketImpl* socket = new SocketImpl(this, port, mailbox);
+    return Homa::unique_ptr<Socket>(socket);
+}
 
 /// See Homa::Transport::poll()
 void
@@ -136,5 +159,67 @@ TransportImpl::processPacket(Driver::Packet* packet, IpAddress sourceIp)
     }
 }
 
-}  // namespace Core
-}  // namespace Homa
+/**
+ * Construct an instance of a Homa socket.
+ *
+ * @param transport
+ *      Transport that owns the socket.
+ * @param port
+ *      Local port number of the socket.
+ * @param mailbox
+ *      Mailbox assigned to this socket.
+ */
+TransportImpl::SocketImpl::SocketImpl(TransportImpl* transport, uint16_t port,
+                                      Mailbox* mailbox)
+    : Socket()
+    , disabled()
+    , localAddress{transport->getDriver()->getLocalAddress(), port}
+    , mailbox(mailbox)
+    , transport(transport)
+{}
+
+/// See Homa::Socket::alloc()
+unique_ptr<Homa::OutMessage>
+TransportImpl::SocketImpl::alloc()
+{
+    if (isShutdown()) {
+        return nullptr;
+    }
+    OutMessage* outMessage = transport->sender->allocMessage(localAddress.port);
+    return unique_ptr<OutMessage>(outMessage);
+}
+
+/// See Homa::Socket::close()
+void
+TransportImpl::SocketImpl::close()
+{
+    bool success = transport->mailboxDir->remove(localAddress.port);
+    if (!success) {
+        ERROR("Failed to remove mailbox (port = %u)", localAddress.port);
+    }
+
+    // Destruct the socket (the mailbox may be still in use).
+    // Note: it's actually legal to say "delete this" from a member function:
+    // https://isocpp.org/wiki/faq/freestore-mgmt#delete-this
+    delete this;
+}
+
+/// See Homa::Socket::receive()
+unique_ptr<Homa::InMessage>
+TransportImpl::SocketImpl::receive(bool blocking)
+{
+    if (isShutdown()) {
+        return nullptr;
+    }
+    return unique_ptr<InMessage>(mailbox->retrieve(blocking));
+}
+
+/// See Homa::Socket::shutdown()
+void
+TransportImpl::SocketImpl::shutdown()
+{
+    disabled.store(true);
+    mailbox->socketShutdown();
+}
+
+}  // namespace Homa::Core

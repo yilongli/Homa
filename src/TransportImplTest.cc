@@ -38,7 +38,7 @@ class TransportImplTest : public ::testing::Test {
   public:
     TransportImplTest()
         : mockDriver()
-        , transport(new TransportImpl(&mockDriver, 22))
+        , transport(new TransportImpl(&mockDriver, nullptr, 22))
         , mockSender(
               new NiceMock<Homa::Mock::MockSender>(22, &mockDriver, 0, 0))
         , mockReceiver(

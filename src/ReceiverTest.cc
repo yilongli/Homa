@@ -15,6 +15,7 @@
 
 #include <Cycles.h>
 #include <Homa/Debug.h>
+#include <Homa/SimpleMailboxDir.h>
 #include <gtest/gtest.h>
 
 #include <mutex>
@@ -46,6 +47,8 @@ class ReceiverTest : public ::testing::Test {
         : mockDriver()
         , mockPacket {&payload}
         , mockPolicyManager(&mockDriver)
+        , mailboxDir()
+        , mailbox(mailboxDir.alloc(60001))
         , payload()
         , receiver()
         , savedLogPolicy(Debug::getLogPolicy())
@@ -54,7 +57,7 @@ class ReceiverTest : public ::testing::Test {
         ON_CALL(mockDriver, getMaxPayloadSize).WillByDefault(Return(1027));
         Debug::setLogPolicy(
             Debug::logPolicyFromString("src/ObjectPool@SILENT"));
-        receiver = new Receiver(&mockDriver, &mockPolicyManager,
+        receiver = new Receiver(&mockDriver, &mailboxDir, &mockPolicyManager,
                                 messageTimeoutCycles, resendIntervalCycles);
         PerfUtils::Cycles::mockTscValue = 10000;
     }
@@ -73,6 +76,8 @@ class ReceiverTest : public ::testing::Test {
     NiceMock<Homa::Mock::MockDriver> mockDriver;
     Homa::Mock::MockDriver::MockPacket mockPacket;
     NiceMock<Homa::Mock::MockPolicyManager> mockPolicyManager;
+    SimpleMailboxDir mailboxDir;
+    Mailbox* mailbox;
     char payload[1028];
     Receiver* receiver;
     std::vector<std::pair<std::string, std::string>> savedLogPolicy;
@@ -101,13 +106,10 @@ TEST_F(ReceiverTest, handleDataPacket)
     Receiver::ScheduledMessageInfo* info = nullptr;
     Receiver::MessageBucket* bucket = receiver->messageBuckets.getBucket(id);
 
+    new (mockPacket.payload) Protocol::Packet::DataHeader(
+        0, 60001, id, totalMessageLength, policyVersion, 1, 0);
     Protocol::Packet::DataHeader* header =
         static_cast<Protocol::Packet::DataHeader*>(mockPacket.payload);
-    header->common.opcode = Protocol::Packet::DATA;
-    header->common.messageId = id;
-    header->totalLength = totalMessageLength;
-    header->policyVersion = policyVersion;
-    header->unscheduledIndexLimit = 1;
     IpAddress sourceIp{22};
 
     // -------------------------------------------------------------------------
@@ -201,7 +203,7 @@ TEST_F(ReceiverTest, handleDataPacket)
     EXPECT_EQ(4U, message->numPackets);
     EXPECT_EQ(0U, info->bytesRemaining);
     EXPECT_EQ(Receiver::Message::State::COMPLETED, message->state);
-    EXPECT_EQ(message, &receiver->receivedMessages.queue.back());
+    EXPECT_EQ(message, mailbox->retrieve(false));
     Mock::VerifyAndClearExpectations(&mockDriver);
 
     // -------------------------------------------------------------------------
@@ -318,29 +320,6 @@ TEST_F(ReceiverTest, handlePingPacket_unknown)
         (Protocol::Packet::UnknownHeader*)payload;
     EXPECT_EQ(Protocol::Packet::UNKNOWN, header->common.opcode);
     EXPECT_EQ(id, header->common.messageId);
-}
-
-TEST_F(ReceiverTest, receiveMessage)
-{
-    Receiver::Message* msg0 = receiver->messageAllocator.pool.construct(
-        receiver, &mockDriver, 0, 0, Protocol::MessageId(42, 0),
-        SocketAddress{22, 60001}, 0);
-    Receiver::Message* msg1 = receiver->messageAllocator.pool.construct(
-        receiver, &mockDriver, 0, 0, Protocol::MessageId(42, 0),
-        SocketAddress{22, 60001}, 0);
-
-    receiver->receivedMessages.queue.push_back(&msg0->receivedMessageNode);
-    receiver->receivedMessages.queue.push_back(&msg1->receivedMessageNode);
-    EXPECT_FALSE(receiver->receivedMessages.queue.empty());
-
-    EXPECT_EQ(msg0, receiver->receiveMessage());
-    EXPECT_FALSE(receiver->receivedMessages.queue.empty());
-
-    EXPECT_EQ(msg1, receiver->receiveMessage());
-    EXPECT_TRUE(receiver->receivedMessages.queue.empty());
-
-    EXPECT_EQ(nullptr, receiver->receiveMessage());
-    EXPECT_TRUE(receiver->receivedMessages.queue.empty());
 }
 
 TEST_F(ReceiverTest, poll)

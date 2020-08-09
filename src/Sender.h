@@ -21,7 +21,7 @@
 
 #include <array>
 #include <atomic>
-#include <unordered_map>
+#include <bitset>
 
 #include "Intrusive.h"
 #include "ObjectPool.h"
@@ -126,7 +126,7 @@ class Sender {
      * Sender::Message objects are contained in the Transport::Op but should
      * only be accessed by the Sender.
      */
-    class Message : public Homa::OutMessage {
+    class Message final : public Homa::OutMessage {
       public:
         /**
          * Construct an Message.
