@@ -49,11 +49,13 @@ Sender::Sender(uint64_t transportId, Driver* driver,
     , policyManager(policyManager)
     , nextMessageSequenceNumber(1)
     , DRIVER_QUEUED_BYTE_LIMIT(2 * driver->getMaxPayloadSize())
+    , DRIVER_CYCLES_TO_DRAIN_1MB(PerfUtils::Cycles::fromSeconds(1) * 8 /
+                                 driver->getBandwidth())
     , messageBuckets(messageTimeoutCycles, pingIntervalCycles)
     , queueMutex()
-    , sendQueue()
-    , sending()
     , sendReady(false)
+    , notifySendReady()
+    , sendQueue()
     , messageAllocator()
 {}
 
@@ -91,7 +93,7 @@ Sender::handleDonePacket(Driver::Packet* packet)
 
     if (message == nullptr) {
         // No message for this DONE packet; must be old. Just drop it.
-        driver->releasePackets(&packet, 1);
+        driver->releasePackets(packet, 1);
         return;
     }
 
@@ -102,7 +104,7 @@ Sender::handleDonePacket(Driver::Packet* packet)
             // Expected behavior
             bucket->messageTimeouts.cancelTimeout(&message->messageTimeout);
             bucket->pingTimeouts.cancelTimeout(&message->pingTimeout);
-            message->state.store(OutMessage::Status::COMPLETED);
+            message->setStatus(OutMessage::Status::COMPLETED);
             break;
         case OutMessage::Status::CANCELED:
             // Canceled by the the application; just ignore the DONE.
@@ -140,7 +142,7 @@ Sender::handleDonePacket(Driver::Packet* packet)
             break;
     }
 
-    driver->releasePackets(&packet, 1);
+    driver->releasePackets(packet, 1);
 }
 
 /**
@@ -166,7 +168,7 @@ Sender::handleResendPacket(Driver::Packet* packet)
     if (message == nullptr) {
         // No message for this RESEND; RESEND must be old. Just ignore it; this
         // case should be pretty rare and the Receiver will timeout eventually.
-        driver->releasePackets(&packet, 1);
+        driver->releasePackets(packet, 1);
         return;
     } else if (message->numPackets < 2) {
         // We should never get a RESEND for a single packet message.  Just
@@ -175,7 +177,7 @@ Sender::handleResendPacket(Driver::Packet* packet)
             "Message (%lu, %lu) with only 1 packet received unexpected RESEND "
             "request; peer Transport may be confused.",
             msgId.transportId, msgId.sequence);
-        driver->releasePackets(&packet, 1);
+        driver->releasePackets(packet, 1);
         return;
     }
 
@@ -194,7 +196,7 @@ Sender::handleResendPacket(Driver::Packet* packet)
             "may be confused.",
             msgId.transportId, msgId.sequence, index, resendEnd,
             info->packets->numPackets);
-        driver->releasePackets(&packet, 1);
+        driver->releasePackets(packet, 1);
         return;
     }
 
@@ -205,7 +207,7 @@ Sender::handleResendPacket(Driver::Packet* packet)
         // will never be overridden since the resend index will not exceed the
         // preset packetsGranted.
         info->priority = header->priority;
-        sendReady.store(true);
+        signalPacerThread(lock_queue);
     }
 
     if (index >= info->packetsSent) {
@@ -227,7 +229,7 @@ Sender::handleResendPacket(Driver::Packet* packet)
         }
     }
 
-    driver->releasePackets(&packet, 1);
+    driver->releasePackets(packet, 1);
 }
 
 /**
@@ -248,14 +250,14 @@ Sender::handleGrantPacket(Driver::Packet* packet)
     Message* message = bucket->findMessage(msgId, lock);
     if (message == nullptr) {
         // No message for this grant; grant must be old. Just drop it.
-        driver->releasePackets(&packet, 1);
+        driver->releasePackets(packet, 1);
         return;
     }
 
     bucket->messageTimeouts.setTimeout(&message->messageTimeout);
     bucket->pingTimeouts.setTimeout(&message->pingTimeout);
 
-    if (message->state.load() == OutMessage::Status::IN_PROGRESS) {
+    if (message->getStatus() == OutMessage::Status::IN_PROGRESS) {
         SpinLock::Lock lock_queue(queueMutex);
         QueuedMessageInfo* info = &message->queuedMessageInfo;
 
@@ -284,11 +286,11 @@ Sender::handleGrantPacket(Driver::Packet* packet)
             // limit will never be overridden since the incomingGrantIndex will
             // not exceed the preset packetsGranted.
             info->priority = header->priority;
-            sendReady.store(true);
+            signalPacerThread(lock_queue);
         }
     }
 
-    driver->releasePackets(&packet, 1);
+    driver->releasePackets(packet, 1);
 }
 
 /**
@@ -310,7 +312,7 @@ Sender::handleUnknownPacket(Driver::Packet* packet)
 
     if (message == nullptr) {
         // No message was found. Just drop the packet.
-        driver->releasePackets(&packet, 1);
+        driver->releasePackets(packet, 1);
         return;
     }
 
@@ -324,14 +326,14 @@ Sender::handleUnknownPacket(Driver::Packet* packet)
         if (message->numPackets > 1) {
             SpinLock::Lock lock_queue(queueMutex);
             QueuedMessageInfo* info = &message->queuedMessageInfo;
-            if (message->state == OutMessage::Status::IN_PROGRESS) {
+            if (message->getStatus() == OutMessage::Status::IN_PROGRESS) {
                 assert(sendQueue.contains(&info->sendQueueNode));
                 sendQueue.remove(&info->sendQueueNode);
             }
             assert(!sendQueue.contains(&info->sendQueueNode));
         }
 
-        message->state.store(OutMessage::Status::IN_PROGRESS);
+        message->setStatus(OutMessage::Status::IN_PROGRESS);
 
         // Get the current policy for unscheduled bytes.
         Policy::Unscheduled policy = policyManager->getUnscheduledPolicy(
@@ -362,7 +364,7 @@ Sender::handleUnknownPacket(Driver::Packet* packet)
             assert(dataPacket != nullptr);
             driver->sendPacket(dataPacket, message->destination.ip,
                     policy.priority);
-            message->state.store(OutMessage::Status::SENT);
+            message->setStatus(OutMessage::Status::SENT);
         } else {
             // Otherwise, queue the message to be sent in SRPT order.
             SpinLock::Lock lock_queue(queueMutex);
@@ -385,14 +387,14 @@ Sender::handleUnknownPacket(Driver::Packet* packet)
             Intrusive::deprioritize<Message>(
                 &sendQueue, &info->sendQueueNode,
                 QueuedMessageInfo::ComparePriority());
-            sendReady.store(true);
+            signalPacerThread(lock_queue);
         }
     } else {
         // The message is already considered "done" so the UNKNOWN packet
         // must be a stale response to a ping.
     }
 
-    driver->releasePackets(&packet, 1);
+    driver->releasePackets(packet, 1);
 }
 
 /**
@@ -413,7 +415,7 @@ Sender::handleErrorPacket(Driver::Packet* packet)
     Message* message = bucket->findMessage(msgId, lock);
     if (message == nullptr) {
         // No message for this ERROR packet; must be old. Just drop it.
-        driver->releasePackets(&packet, 1);
+        driver->releasePackets(packet, 1);
         return;
     }
 
@@ -423,7 +425,7 @@ Sender::handleErrorPacket(Driver::Packet* packet)
             // Message was sent and a failure notification was received.
             bucket->messageTimeouts.cancelTimeout(&message->messageTimeout);
             bucket->pingTimeouts.cancelTimeout(&message->pingTimeout);
-            message->state.store(OutMessage::Status::FAILED);
+            message->setStatus(OutMessage::Status::FAILED);
             break;
         case OutMessage::Status::CANCELED:
             // Canceled by the the application; just ignore the ERROR.
@@ -461,18 +463,7 @@ Sender::handleErrorPacket(Driver::Packet* packet)
             break;
     }
 
-    driver->releasePackets(&packet, 1);
-}
-
-/**
- * Allow the Sender to make progress toward sending outgoing messages.
- *
- * This method must be called eagerly to ensure messages are sent.
- */
-void
-Sender::poll()
-{
-    trySend();
+    driver->releasePackets(packet, 1);
 }
 
 /**
@@ -561,7 +552,29 @@ Sender::Message::cancel()
 OutMessage::Status
 Sender::Message::getStatus() const
 {
-    return state.load();
+    return state.load(std::memory_order_acquire);
+}
+
+/**
+ * Change the current state of this message and invoke callback if necessary.
+ *
+ * @param newStatus
+ *      The new state of the message
+ */
+void
+Sender::Message::setStatus(OutMessage::Status newStatus)
+{
+    state.store(newStatus, std::memory_order_release);
+    if (notifyEndState) {
+        switch (newStatus) {
+            case OutMessage::Status::CANCELED:
+            case OutMessage::Status::COMPLETED:
+            case OutMessage::Status::FAILED:
+                notifyEndState();
+            default:
+                break;
+        }
+    }
 }
 
 /**
@@ -592,6 +605,15 @@ Sender::Message::prepend(const void* source, size_t count)
         packetIndex++;
         packetOffset = 0;
     }
+}
+
+/**
+ * @copydoc Homa::OutMessage::registerCallbackEndState()
+ */
+void
+Sender::Message::registerCallbackEndState(Callback func)
+{
+    notifyEndState = std::move(func);
 }
 
 /**
@@ -661,10 +683,10 @@ Sender::Message::send(SocketAddress destination)
  *      Pointer to a Packet at the given index if it exists; nullptr otherwise.
  */
 Driver::Packet*
-Sender::Message::getPacket(size_t index) const
+Sender::Message::getPacket(size_t index)
 {
     if (occupied.test(index)) {
-        return packets[index];
+        return &packets[index];
     }
     return nullptr;
 }
@@ -688,9 +710,9 @@ Sender::Message::getOrAllocPacket(size_t index)
         numPackets++;
         // TODO(cstlee): A Message probably shouldn't be in charge of setting
         //               the packet length.
-        packets[index]->length = TRANSPORT_HEADER_LENGTH;
+        packets[index].length = TRANSPORT_HEADER_LENGTH;
     }
-    return packets[index];
+    return &packets[index];
 }
 
 /**
@@ -719,7 +741,7 @@ Sender::sendMessage(Sender::Message* message, SocketAddress destination)
 
     message->id = id;
     message->destination = destination;
-    message->state.store(OutMessage::Status::IN_PROGRESS);
+    message->setStatus(OutMessage::Status::IN_PROGRESS);
 
     int actualMessageLen = 0;
     // fill out metadata.
@@ -761,7 +783,7 @@ Sender::sendMessage(Sender::Message* message, SocketAddress destination)
         Driver::Packet* packet = message->getPacket(0);
         assert(packet != nullptr);
         driver->sendPacket(packet, message->destination.ip, policy.priority);
-        message->state.store(OutMessage::Status::SENT);
+        message->setStatus(OutMessage::Status::SENT);
     } else {
         // Otherwise, queue the message to be sent in SRPT order.
         SpinLock::Lock lock_queue(queueMutex);
@@ -778,7 +800,7 @@ Sender::sendMessage(Sender::Message* message, SocketAddress destination)
         sendQueue.push_front(&info->sendQueueNode);
         Intrusive::deprioritize<Message>(&sendQueue, &info->sendQueueNode,
                                          QueuedMessageInfo::ComparePriority());
-        sendReady.store(true);
+        signalPacerThread(lock_queue);
     }
 }
 
@@ -797,19 +819,21 @@ Sender::cancelMessage(Sender::Message* message)
     if (bucket->messages.contains(&message->bucketNode)) {
         bucket->messageTimeouts.cancelTimeout(&message->messageTimeout);
         bucket->pingTimeouts.cancelTimeout(&message->pingTimeout);
-        if (message->numPackets > 1 &&
-            message->state == OutMessage::Status::IN_PROGRESS) {
-            // Check to see if the message needs to be dequeued.
+
+        // Check to see if the message needs to be dequeued. In order to reduce
+        // cache misses related to queueMutex, check the status first to avoid
+        // unnecessary locking.
+        OutMessage::Status status = message->getStatus();
+        if ((status == OutMessage::Status::IN_PROGRESS) ||
+            (status == OutMessage::Status::FAILED)) {
             SpinLock::Lock lock_queue(queueMutex);
-            // Recheck state with lock in case it change right before this.
-            if (message->state == OutMessage::Status::IN_PROGRESS) {
-                QueuedMessageInfo* info = &message->queuedMessageInfo;
-                assert(sendQueue.contains(&info->sendQueueNode));
+            QueuedMessageInfo* info = &message->queuedMessageInfo;
+            if (sendQueue.contains(&info->sendQueueNode)) {
                 sendQueue.remove(&info->sendQueueNode);
             }
         }
         bucket->messages.remove(&message->bucketNode);
-        message->state.store(OutMessage::Status::CANCELED);
+        message->setStatus(OutMessage::Status::CANCELED);
     }
 }
 
@@ -859,8 +883,8 @@ Sender::checkMessageTimeouts()
                 break;
             }
             // Found expired timeout.
-            if (message->state != OutMessage::Status::COMPLETED) {
-                message->state.store(OutMessage::Status::FAILED);
+            if (message->getStatus() != OutMessage::Status::COMPLETED) {
+                message->setStatus(OutMessage::Status::FAILED);
             }
             bucket->messageTimeouts.cancelTimeout(&message->messageTimeout);
             bucket->pingTimeouts.cancelTimeout(&message->pingTimeout);
@@ -902,8 +926,8 @@ Sender::checkPingTimeouts()
                 break;
             }
             // Found expired timeout.
-            if (message->state == OutMessage::Status::COMPLETED ||
-                message->state == OutMessage::Status::FAILED) {
+            if (message->getStatus() == OutMessage::Status::COMPLETED ||
+                message->getStatus() == OutMessage::Status::FAILED) {
                 bucket->pingTimeouts.cancelTimeout(&message->pingTimeout);
                 continue;
             } else {
@@ -920,20 +944,56 @@ Sender::checkPingTimeouts()
     return globalNextTimeout;
 }
 
+/// See Homa::Transport::registerCallbackSendReady()
+void
+Sender::registerCallbackSendReady(Callback func)
+{
+    notifySendReady = std::move(func);
+}
+
 /**
- * Send out packets for any messages with unscheduled/granted bytes.
+ * Attempt to wake up the pacer thread that is responsible for calling trySend()
+ * repeatedly, if it's currently blocked waiting for packets to become ready to
+ * be sent.
+ *
+ * This method is called when new GRANTs arrive, when new outgoing messages
+ * appear, and when retransmission is requested.
+ *
+ * @param lockHeld
+ *      Reminder to hold the Sender::queueMutex during this call.
  */
 void
-Sender::trySend()
+Sender::signalPacerThread(const SpinLock::Lock& lockHeld)
+{
+    (void)lockHeld;
+    sendReady = true;
+    if (notifySendReady) {
+        notifySendReady();
+    }
+}
+
+/**
+ * Attempt to send out packets for any messages with unscheduled/granted bytes
+ * in a way that limits queue buildup in the NIC.
+ *
+ * This method must be called eagerly to allow the Sender to make progress
+ * toward sending outgoing messages.
+ *
+ * @param[out] waitUntil
+ *      Time to wait before next call, in microseconds, in order to allow
+ *      the NIC transmit queue to drain. Only set when this method returns
+ *      true.
+ * @return
+ *      True if more packets are ready to be transmitted when the method
+ *      returns; false, otherwise.
+ */
+bool
+Sender::trySend(uint64_t* waitUntil)
 {
     // Skip when there are no messages to send.
+    SpinLock::UniqueLock lock_queue(queueMutex);
     if (!sendReady) {
-        return;
-    }
-
-    // Skip sending if another thread is already working on it.
-    if (sending.test_and_set()) {
-        return;
+        return false;
     }
 
     /* The goal is to send out packets for messages that have bytes that have
@@ -942,7 +1002,6 @@ Sender::trySend()
      * Each time this method is called we will try to send enough packet to keep
      * the NIC busy but not too many as to cause excessive queue in the NIC.
      */
-    SpinLock::UniqueLock lock_queue(queueMutex);
     uint32_t queuedBytesEstimate = driver->getQueuedBytes();
     // Optimistically assume we will finish sending every granted packet this
     // round; we will set again sendReady if it turns out we don't finish.
@@ -950,7 +1009,7 @@ Sender::trySend()
     auto it = sendQueue.begin();
     while (it != sendQueue.end()) {
         Message& message = *it;
-        assert(message.state.load() == OutMessage::Status::IN_PROGRESS);
+        assert(message.getStatus() == OutMessage::Status::IN_PROGRESS);
         QueuedMessageInfo* info = &message.queuedMessageInfo;
         assert(info->packetsGranted <= info->packets->numPackets);
         while (info->packetsSent < info->packetsGranted) {
@@ -977,20 +1036,25 @@ Sender::trySend()
         }
         if (info->packetsSent >= info->packets->numPackets) {
             // We have finished sending the message.
-            message.state.store(OutMessage::Status::SENT);
+            message.setStatus(OutMessage::Status::SENT);
             it = sendQueue.remove(it);
         } else if (info->packetsSent >= info->packetsGranted) {
             // We have sent every granted packet.
             ++it;
         } else {
-            // We hit the DRIVER_QUEUED_BYTES_LIMIT; stop sending for now.
+            // We hit the DRIVER_QUEUED_BYTE_LIMIT; stop sending for now.
             // We didn't finish sending all granted packets.
             sendReady = true;
+            // Compute how much time the driver needs to drain its queue,
+            // then schedule to wake up a bit earlier to avoid blowing bubbles.
+            static const uint64_t us = PerfUtils::Cycles::fromMicroseconds(1);
+            *waitUntil = PerfUtils::Cycles::rdtsc() - 1 * us +
+                queuedBytesEstimate * DRIVER_CYCLES_TO_DRAIN_1MB / 1000000;
             break;
         }
     }
 
-    sending.clear();
+    return sendReady;
 }
 
 }  // namespace Core
