@@ -97,13 +97,8 @@ TransportImpl::poll()
     receiver->poll();
 
     if (PerfUtils::Cycles::rdtsc() >= nextTimeoutCycles.load()) {
-        uint64_t requestedTimeoutCycles;
-        requestedTimeoutCycles = sender->checkTimeouts();
+        uint64_t requestedTimeoutCycles = checkTimeouts();
         nextTimeoutCycles.store(requestedTimeoutCycles);
-        requestedTimeoutCycles = receiver->checkTimeouts();
-        if (nextTimeoutCycles.load() > requestedTimeoutCycles) {
-            nextTimeoutCycles.store(requestedTimeoutCycles);
-        }
     }
 }
 
@@ -124,6 +119,16 @@ TransportImpl::processPackets()
     }
 }
 
+/// See Homa::Transport::checkTimeouts()
+uint64_t
+TransportImpl::checkTimeouts()
+{
+    uint64_t requestedTimeoutCycles = std::min(sender->checkTimeouts(),
+        receiver->checkTimeouts());
+    return requestedTimeoutCycles;
+}
+
+/// See Homa::Transport::processPacket()
 void
 TransportImpl::processPacket(Driver::Packet* packet, IpAddress sourceIp)
 {
@@ -157,6 +162,20 @@ TransportImpl::processPacket(Driver::Packet* packet, IpAddress sourceIp)
             sender->handleErrorPacket(packet);
             break;
     }
+}
+
+/// See Homa::Transport::trySend()
+void
+TransportImpl::trySend()
+{
+    sender->poll();
+}
+
+/// See Homa::Transport::trySendGrants()
+void
+TransportImpl::trySendGrants()
+{
+    receiver->poll();
 }
 
 /**

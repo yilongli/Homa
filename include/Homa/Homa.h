@@ -25,8 +25,6 @@
 
 #include <Homa/Driver.h>
 
-#include <cstdint>
-
 namespace Homa {
 
 /**
@@ -149,14 +147,7 @@ class OutMessage {
     /**
      * Defines the possible states of an OutMessage.
      */
-    enum class Status {
-        NOT_STARTED,  //< The sending of this message has not started.
-        IN_PROGRESS,  //< The message is in the process of being sent.
-        CANCELED,     //< The message was canceled while still IN_PROGRESS.
-        SENT,         //< The message has been completely sent.
-        COMPLETED,    //< The message has been received and processed.
-        FAILED,       //< The message failed to be delivered and processed.
-    };
+    using Status = OutMessageStatus;
 
     /**
      * Custom deleter for use with std::unique_ptr.
@@ -204,6 +195,17 @@ class OutMessage {
      * @sa Message::reserve()
      */
     virtual void prepend(const void* source, size_t count) = 0;
+
+    /**
+     * Register a callback function to be invoked when the status of this
+     * message reaches the end states.
+     *
+     * @param func
+     *      The callback function
+     * @param data
+     *      Argument to the callback function
+     */
+    virtual void registerCallback(void (*func) (void*), void* data) = 0;
 
     /**
      * Reserve a number of bytes at the beginning of the Message.
@@ -356,6 +358,7 @@ class MailboxDir {
      */
     virtual Mailbox* open(uint16_t port) = 0;
 
+    // FIXME: move this into Mailbox? mailbox::remove()
     /**
      * Remove the mailbox that matches the given port number.
      *
@@ -515,6 +518,38 @@ class Transport {
      * Return this transport's unique identifier.
      */
     virtual uint64_t getId() = 0;
+
+    // FIXME: the following (low-level) methods are used by Shenango which doesn't
+    // use poll() to make progress
+    // FIXME: get rid of poll() from the Transport interface? expose low-level
+    // operations instead? i.e., processPacket, checkTimeouts, trySend, trySendGrant?
+
+    /**
+     * Process any timeouts that have expired.
+     *
+     * This method must be called periodically to ensure timely handling of
+     * expired timeouts.
+     *
+     * @return
+     *      The rdtsc cycle time when this method should be called again.
+     */
+    virtual uint64_t checkTimeouts() = 0;
+
+    /**
+     * Handle an ingress packet by running it through the transport protocol
+     * stack.
+     *
+     * @param packet
+     *      The ingress packet.
+     * @param source
+     *      IpAddress of the socket from which the packet is sent.
+     */
+    virtual void processPacket(Driver::Packet* packet, IpAddress source) = 0;
+
+    // FIXME: return something?
+    virtual void trySend() = 0;
+
+    virtual void trySendGrants() = 0;
 
   protected:
     /**

@@ -40,10 +40,13 @@ class TransportImpl final : public Transport {
     explicit TransportImpl(Driver* driver, MailboxDir* mailboxDir,
                            uint64_t transportId);
     ~TransportImpl();
-
-    virtual void free();
-    virtual Homa::unique_ptr<Socket> open(uint16_t port);
-    virtual void poll();
+    void free() override;
+    Homa::unique_ptr<Socket> open(uint16_t port) override;
+    void poll() override;
+    uint64_t checkTimeouts() override;
+    void processPacket(Driver::Packet* packet, IpAddress source) override;
+    void trySend() override;
+    void trySendGrants() override;
 
     /// See Homa::Transport::getDriver()
     virtual Driver* getDriver()
@@ -102,7 +105,6 @@ class TransportImpl final : public Transport {
 
   private:
     void processPackets();
-    void processPacket(Driver::Packet* packet, IpAddress source);
 
     /// Unique identifier for this transport.
     const uint64_t transportId;

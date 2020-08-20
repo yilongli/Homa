@@ -73,6 +73,7 @@ endif()
 ## lib Homa ####################################################################
 add_library(Homa
     src/CodeLocation.cc
+    src/CHoma.cc
     src/Debug.cc
     src/Driver.cc
     src/Homa.cc
@@ -80,6 +81,7 @@ add_library(Homa
     src/Policy.cc
     src/Receiver.cc
     src/Sender.cc
+    src/Shenango.cc
     src/StringUtil.cc
     src/ThreadId.cc
     src/TransportImpl.cc
