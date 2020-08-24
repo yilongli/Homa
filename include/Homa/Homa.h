@@ -147,14 +147,7 @@ class OutMessage {
     /**
      * Defines the possible states of an OutMessage.
      */
-    enum class Status {
-        NOT_STARTED,  //< The sending of this message has not started.
-        IN_PROGRESS,  //< The message is in the process of being sent.
-        CANCELED,     //< The message was canceled while still IN_PROGRESS.
-        SENT,         //< The message has been completely sent.
-        COMPLETED,    //< The message has been received and processed.
-        FAILED,       //< The message failed to be delivered and processed.
-    };
+    using Status = OutMessageStatus;
 
     /**
      * Custom deleter for use with std::unique_ptr.
