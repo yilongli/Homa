@@ -48,6 +48,8 @@ Receiver::Receiver(Driver* driver, MailboxDir* mailboxDir,
     , messageBuckets(messageTimeoutCycles, resendIntervalCycles)
     , schedulerMutex()
     , scheduledPeers()
+    , needGrants()
+    , notifyNeedGrants()
     , granting()
     , messageAllocator()
 {}
@@ -121,6 +123,10 @@ Receiver::handleDataPacket(Driver::Packet* packet, IpAddress sourceIp)
             // Message needs to be scheduled.
             SpinLock::Lock lock_scheduler(schedulerMutex);
             schedule(message, lock_scheduler);
+            if (!needGrants && notifyNeedGrants) {
+                notifyNeedGrants();
+            }
+            needGrants = true;
         }
     }
 
@@ -146,6 +152,10 @@ Receiver::handleDataPacket(Driver::Packet* packet, IpAddress sourceIp)
                 assert(info->bytesRemaining >= packetDataBytes);
                 info->bytesRemaining -= packetDataBytes;
                 updateSchedule(message, lock_scheduler);
+                if (!needGrants && notifyNeedGrants) {
+                    notifyNeedGrants();
+                }
+                needGrants = true;
             }
         }
 
@@ -683,25 +693,36 @@ Receiver::checkResendTimeouts()
     return globalNextTimeout;
 }
 
+/// See Homa::Transport::registerCallbackNeedGrants()
+void
+Receiver::registerCallbackNeedGrants(Callback func)
+{
+    notifyNeedGrants = std::move(func);
+}
+
 /**
  * Send GRANTs to incoming Message according to the Receiver's policy.
  *
  * This method must be called eagerly to allow the Receiver to make progress
  * toward receiving incoming messages.
+ *
+ * @return
+ *      True if the method has found some messages to grant; false, otherwise.
  */
-void
+bool
 Receiver::trySendGrants()
 {
     // Skip scheduling if another poller is already working on it.
     if (granting.test_and_set()) {
-        return;
+        return true;
     }
 
     SpinLock::Lock lock(schedulerMutex);
-    if (scheduledPeers.empty()) {
+    if (!needGrants) {
         granting.clear();
-        return;
+        return false;
     }
+    needGrants = false;
 
     /* The overall goal is to grant up to policy.degreeOvercommitment number of
      * scheduled messages simultaneously.  Each of these messages should always
@@ -723,6 +744,7 @@ Receiver::trySendGrants()
 
     auto it = scheduledPeers.begin();
     int slot = 0;
+    bool foundWork = false;
     while (it != scheduledPeers.end() && slot < policy.degreeOvercommitment) {
         assert(!it->scheduledMessages.empty());
         Message* message = &it->scheduledMessages.front();
@@ -746,6 +768,7 @@ Receiver::trySendGrants()
             ControlPacket::send<Protocol::Packet::GrantHeader>(
                 driver, sourceIp, id,
                 Util::downCast<uint32_t>(info->bytesGranted), info->priority);
+            foundWork = true;
         }
 
         // Update the iterator first since calling unschedule() may cause the
@@ -761,6 +784,7 @@ Receiver::trySendGrants()
     }
 
     granting.clear();
+    return foundWork;
 }
 
 /**

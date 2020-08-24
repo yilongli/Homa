@@ -24,6 +24,7 @@
 #define HOMA_INCLUDE_HOMA_HOMA_H
 
 #include <Homa/Driver.h>
+#include <functional>
 
 namespace Homa {
 
@@ -38,6 +39,12 @@ namespace Homa {
  */
 template <typename T>
 using unique_ptr = std::unique_ptr<T, typename T::Deleter>;
+
+/**
+ * Shorthand for user-defined callback functions which are used by the transport
+ * library to notify users of certain events.
+ */
+using Callback = std::function<void()>;
 
 /**
  * Represents a socket address to (from) which we can send (receive) messages.
@@ -198,14 +205,12 @@ class OutMessage {
 
     /**
      * Register a callback function to be invoked when the status of this
-     * message reaches the end states.
+     * message reaches an end state.
      *
      * @param func
-     *      The callback function
-     * @param data
-     *      Argument to the callback function
+     *      The function object to invoke.
      */
-    virtual void registerCallback(void (*func) (void*), void* data) = 0;
+    virtual void registerCallbackEndState(Callback func) = 0;
 
     /**
      * Reserve a number of bytes at the beginning of the Message.
@@ -452,10 +457,9 @@ class Socket {
 /**
  * Provides a means of communicating across the network using the Homa protocol.
  *
- * The transport is used to send and receive messages across the network using
- * the RemoteOp and ServerOp abstractions.  The execution of the transport is
- * driven through repeated calls to the Transport::poll() method; the transport
- * will not make any progress otherwise.
+ * The execution of the transport is driven through repeated calls to methods
+ * like checkTimeouts(), processPacket(), trySend(), and trySendGrants(); the
+ * transport will not make any progress otherwise.
  *
  * This class is thread-safe.
  */
@@ -533,22 +537,63 @@ class Transport {
     virtual void processPacket(Driver::Packet* packet, IpAddress source) = 0;
 
     /**
+     * Register a callback function to be invoked when some packets just became
+     * ready to be sent (and there was none before).
+     *
+     * This callback allows the transport library to notify the users that
+     * trySend() should be invoked again as soon as possible. For example,
+     * the callback can be used to implement wakeup signals for the thread
+     * that is responsible for calling trySend(), if this thread decides to
+     * sleep when there is no packets to send.
+     *
+     * @param func
+     *      The function object to invoke.
+     */
+    virtual void registerCallbackSendReady(Callback func) = 0;
+
+    /**
+     * Register a callback function to be invoked when some incoming messages
+     * just became ready for more grants (and there was none before).
+     *
+     * This callback allows the transport library to notify the users that
+     * trySendGrants() should be invoked again as soon as possible. For example,
+     * the callback can be used to implement wakeup signals for the thread
+     * that is responsible for calling trySendGrants(), if this thread decides
+     * to sleep when there is messages waiting for grants.
+     *
+     * @param func
+     *      The function object to invoke.
+     */
+    virtual void registerCallbackNeedGrants(Callback func) = 0;
+
+    /**
      * Attempt to send out packets for any messages with unscheduled/granted
      * bytes in a way that limits queue buildup in the NIC.
      *
      * This method must be called eagerly to allow the Transport to make
      * progress toward sending outgoing messages.
+     *
+     * @param[out] waitUntil
+     *      The rdtsc cycle time when this method should be called again
+     *      (this allows the NIC to drain its transmit queue). Only set
+     *      when this method returns true.
+     * @return
+     *      True if more packets are ready to be transmitted when the method
+     *      returns; false, otherwise.
      */
-    virtual void trySend() = 0;
+    virtual bool trySend(uint64_t* waitUntil) = 0;
 
     /**
-     * Attempt to grant to message senders according to the Homa transport
-     * protocol.
+     * Attempt to grant to incoming messages according to the Homa protocol.
      *
      * This method must be called eagerly to allow the Transport to make
      * progress toward receiving incoming messages.
+     *
+     * @return
+     *      True if the method has found some messages to grant; false,
+     *      otherwise.
      */
-    virtual void trySendGrants() = 0;
+    virtual bool trySendGrants() = 0;
 
   protected:
     /**

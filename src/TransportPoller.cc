@@ -43,7 +43,8 @@ TransportPoller::poll()
     processPackets();
 
     // Allow sender and receiver to make incremental progress.
-    transport->trySend();
+    uint64_t waitUntil;
+    transport->trySend(&waitUntil);
     transport->trySendGrants();
 
     if (PerfUtils::Cycles::rdtsc() >= nextTimeoutCycles.load()) {

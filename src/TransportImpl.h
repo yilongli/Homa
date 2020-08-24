@@ -39,13 +39,18 @@ class TransportImpl final : public Transport {
   public:
     explicit TransportImpl(Driver* driver, MailboxDir* mailboxDir,
                            uint64_t transportId);
+    explicit TransportImpl(Driver* driver, MailboxDir* mailboxDir,
+                           Sender* sender, Receiver* receiver,
+                           uint64_t transportId);
     ~TransportImpl();
     void free() override;
     Homa::unique_ptr<Socket> open(uint16_t port) override;
     uint64_t checkTimeouts() override;
     void processPacket(Driver::Packet* packet, IpAddress source) override;
-    void trySend() override;
-    void trySendGrants() override;
+    void registerCallbackSendReady(Callback func) override;
+    void registerCallbackNeedGrants(Callback func) override;
+    bool trySend(uint64_t* waitUntil) override;
+    bool trySendGrants() override;
 
     /// See Homa::Transport::getDriver()
     virtual Driver* getDriver()

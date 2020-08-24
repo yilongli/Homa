@@ -94,10 +94,11 @@ void homa_outmsg_send(homa_outmsg out_msg, uint32_t ip, uint16_t port)
     deref(OutMessage, out_msg).send({IpAddress{ip}, port});
 }
 
-void homa_outmsg_register_cb(homa_outmsg out_msg, void (*cb) (void*),
-                             void *data)
+void homa_outmsg_register_cb_end_state(homa_outmsg out_msg,
+                                       void (*cb) (void*), void *data)
 {
-    deref(OutMessage, out_msg).registerCallback(cb, data);
+    std::function<void()> func = std::bind(cb, data);
+    deref(OutMessage, out_msg).registerCallbackEndState(func);
 }
 
 void homa_outmsg_release(homa_outmsg out_msg)
@@ -176,12 +177,26 @@ void homa_trans_proc(homa_trans trans, void* pkt, uint32_t src_ip)
         IpAddress{src_ip});
 }
 
-void homa_trans_try_send(homa_trans trans)
+void homa_trans_register_cb_send_ready(homa_trans trans, void *(*cb) (void*),
+                                       void *data)
 {
-    deref(Transport, trans).trySend();
+    std::function<void()> func = std::bind(cb, data);
+    deref(Transport, trans).registerCallbackSendReady(func);
 }
 
-void homa_trans_try_grant(homa_trans trans)
+void homa_trans_register_cb_need_grants(homa_trans trans, void *(*cb) (void*),
+                                        void *data)
 {
-    deref(Transport, trans).trySendGrants();
+    std::function<void()> func = std::bind(cb, data);
+    deref(Transport, trans).registerCallbackNeedGrants(func);
+}
+
+bool homa_trans_try_send(homa_trans trans, uint64_t *wait_until)
+{
+    return deref(Transport, trans).trySend(wait_until);
+}
+
+bool homa_trans_try_grant(homa_trans trans)
+{
+    return deref(Transport, trans).trySendGrants();
 }

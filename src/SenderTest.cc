@@ -351,7 +351,7 @@ TEST_F(SenderTest, handleResendPacket_basic)
     EXPECT_EQ(7, priorities[3]);
     EXPECT_EQ(7, priorities[4]);
     EXPECT_EQ(0, priorities[5]);
-    EXPECT_TRUE(sender->sendReady.load());
+    EXPECT_TRUE(sender->sendReady);
 
     for (int i = 0; i < 10; ++i) {
         delete packets[i];
@@ -540,7 +540,7 @@ TEST_F(SenderTest, handleGrantPacket_basic)
     EXPECT_EQ(6, info->priority);
     EXPECT_EQ(11000U, message->messageTimeout.expirationCycleTime);
     EXPECT_EQ(10100U, message->pingTimeout.expirationCycleTime);
-    EXPECT_TRUE(sender->sendReady.load());
+    EXPECT_TRUE(sender->sendReady);
 }
 
 TEST_F(SenderTest, handleGrantPacket_excessiveGrant)
@@ -587,7 +587,7 @@ TEST_F(SenderTest, handleGrantPacket_excessiveGrant)
     EXPECT_EQ(6, info->priority);
     EXPECT_EQ(11000U, message->messageTimeout.expirationCycleTime);
     EXPECT_EQ(10100U, message->pingTimeout.expirationCycleTime);
-    EXPECT_TRUE(sender->sendReady.load());
+    EXPECT_TRUE(sender->sendReady);
 }
 
 TEST_F(SenderTest, handleGrantPacket_staleGrant)
@@ -618,7 +618,7 @@ TEST_F(SenderTest, handleGrantPacket_staleGrant)
     EXPECT_EQ(2, info->priority);
     EXPECT_EQ(11000U, message->messageTimeout.expirationCycleTime);
     EXPECT_EQ(10100U, message->pingTimeout.expirationCycleTime);
-    EXPECT_FALSE(sender->sendReady.load());
+    EXPECT_FALSE(sender->sendReady);
 }
 
 TEST_F(SenderTest, handleGrantPacket_dropGrant)
@@ -700,7 +700,7 @@ TEST_F(SenderTest, handleUnknownPacket_basic)
     EXPECT_EQ(policyNew.priority, info->priority);
     EXPECT_EQ(0U, info->packetsSent);
     EXPECT_TRUE(sender->sendQueue.contains(&info->sendQueueNode));
-    EXPECT_TRUE(sender->sendReady.load());
+    EXPECT_TRUE(sender->sendReady);
 
     for (int i = 0; i < 5; ++i) {
         delete packets[i];
@@ -752,7 +752,7 @@ TEST_F(SenderTest, handleUnknownPacket_singlePacketMessage)
     EXPECT_EQ(10100U, message->pingTimeout.expirationCycleTime);
     EXPECT_FALSE(
         sender->sendQueue.contains(&message->queuedMessageInfo.sendQueueNode));
-    EXPECT_FALSE(sender->sendReady.load());
+    EXPECT_FALSE(sender->sendReady);
 }
 
 TEST_F(SenderTest, handleUnknownPacket_no_message)
@@ -1323,7 +1323,7 @@ TEST_F(SenderTest, sendMessage_basic)
     EXPECT_EQ(policy.priority, mockPriority);
 
     EXPECT_EQ(Homa::OutMessage::Status::SENT, message->state);
-    EXPECT_FALSE(sender->sendReady.load());
+    EXPECT_FALSE(sender->sendReady);
 }
 
 TEST_F(SenderTest, sendMessage_multipacket)
@@ -1382,7 +1382,7 @@ TEST_F(SenderTest, sendMessage_multipacket)
     // Check sendQueue metadata
     Sender::QueuedMessageInfo* info = &message->queuedMessageInfo;
     EXPECT_TRUE(sender->sendQueue.contains(&info->sendQueueNode));
-    EXPECT_TRUE(sender->sendReady.load());
+    EXPECT_TRUE(sender->sendReady);
 }
 
 TEST_F(SenderTest, sendMessage_missingPacket)
@@ -1592,6 +1592,7 @@ TEST_F(SenderTest, trySend_basic)
     Sender::QueuedMessageInfo* info = &message->queuedMessageInfo;
     SenderTest::addMessage(sender, id, message, true, 3);
     Homa::Mock::MockDriver::MockPacket* packet[5];
+    uint64_t waitUntil;
     const uint32_t PACKET_SIZE = sender->driver->getMaxPayloadSize();
     const uint32_t PACKET_DATA_SIZE =
         PACKET_SIZE - message->TRANSPORT_HEADER_LENGTH;
@@ -1613,7 +1614,7 @@ TEST_F(SenderTest, trySend_basic)
     // 3 granted packets; 2 will send; queue limit reached.
     EXPECT_CALL(mockDriver, sendPacket(Eq(packet[0]), _, _));
     EXPECT_CALL(mockDriver, sendPacket(Eq(packet[1]), _, _));
-    sender->trySend();  // < test call
+    sender->trySend(&waitUntil);  // < test call
     EXPECT_TRUE(sender->sendReady);
     EXPECT_EQ(Homa::OutMessage::Status::IN_PROGRESS, message->state);
     EXPECT_EQ(3U, info->packetsGranted);
@@ -1625,7 +1626,7 @@ TEST_F(SenderTest, trySend_basic)
 
     // 1 packet to be sent; grant limit reached.
     EXPECT_CALL(mockDriver, sendPacket(Eq(packet[2]), _, _));
-    sender->trySend();  // < test call
+    sender->trySend(&waitUntil);  // < test call
     EXPECT_FALSE(sender->sendReady);
     EXPECT_EQ(Homa::OutMessage::Status::IN_PROGRESS, message->state);
     EXPECT_EQ(3U, info->packetsGranted);
@@ -1638,7 +1639,7 @@ TEST_F(SenderTest, trySend_basic)
     // No additional grants; spurious ready hint.
     EXPECT_CALL(mockDriver, sendPacket).Times(0);
     sender->sendReady = true;
-    sender->trySend();  // < test call
+    sender->trySend(&waitUntil);  // < test call
     EXPECT_FALSE(sender->sendReady);
     EXPECT_EQ(Homa::OutMessage::Status::IN_PROGRESS, message->state);
     EXPECT_EQ(3U, info->packetsGranted);
@@ -1653,7 +1654,7 @@ TEST_F(SenderTest, trySend_basic)
     sender->sendReady = true;
     EXPECT_CALL(mockDriver, sendPacket(Eq(packet[3]), _, _));
     EXPECT_CALL(mockDriver, sendPacket(Eq(packet[4]), _, _));
-    sender->trySend();  // < test call
+    sender->trySend(&waitUntil);  // < test call
     EXPECT_FALSE(sender->sendReady);
     EXPECT_EQ(Homa::OutMessage::Status::SENT, message->state);
     EXPECT_EQ(5U, info->packetsGranted);
@@ -1705,8 +1706,10 @@ TEST_F(SenderTest, trySend_multipleMessages)
     EXPECT_CALL(mockDriver, sendPacket(Eq(packet[1]), _, _));
     EXPECT_CALL(mockDriver, sendPacket(Eq(packet[2]), _, _));
 
-    sender->trySend();
+    uint64_t waitUntil;
+    bool sendReady = sender->trySend(&waitUntil);
 
+    EXPECT_FALSE(sendReady);
     EXPECT_EQ(1U, info[0]->packetsSent);
     EXPECT_EQ(Homa::OutMessage::Status::SENT, message[0]->state);
     EXPECT_FALSE(sender->sendQueue.contains(&info[0]->sendQueueNode));
@@ -1718,33 +1721,14 @@ TEST_F(SenderTest, trySend_multipleMessages)
     EXPECT_FALSE(sender->sendQueue.contains(&info[2]->sendQueueNode));
 }
 
-TEST_F(SenderTest, trySend_alreadyRunning)
-{
-    Protocol::MessageId id = {42, 1};
-    Sender::Message* message =
-        dynamic_cast<Sender::Message*>(sender->allocMessage(0));
-    Sender::QueuedMessageInfo* info = &message->queuedMessageInfo;
-    SenderTest::addMessage(sender, id, message, true, 1);
-    setMessagePacket(message, 0, &mockPacket);
-    message->messageLength = 1000;
-    EXPECT_EQ(1U, message->numPackets);
-    EXPECT_EQ(1, info->packetsGranted);
-    EXPECT_EQ(0, info->packetsSent);
-
-    sender->sending.test_and_set();
-
-    EXPECT_CALL(mockDriver, sendPacket).Times(0);
-
-    sender->trySend();
-
-    EXPECT_EQ(0, info->packetsSent);
-}
-
 TEST_F(SenderTest, trySend_nothingToSend)
 {
     EXPECT_TRUE(sender->sendQueue.empty());
     EXPECT_CALL(mockDriver, sendPacket).Times(0);
-    sender->trySend();
+    uint64_t waitUntil = 0;
+    bool sendReady = sender->trySend(&waitUntil);
+    EXPECT_FALSE(sendReady);
+    EXPECT_EQ(waitUntil, 0);
 }
 
 }  // namespace

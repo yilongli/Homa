@@ -127,10 +127,12 @@ extern void homa_outmsg_reserve(homa_outmsg out_msg, size_t n);
 extern void homa_outmsg_send(homa_outmsg out_msg, uint32_t ip, uint16_t port);
 
 /**
- * homa_outmsg_register_cb - C-binding for Homa::OutMessage::registerCallback
+ * homa_outmsg_register_cb - C-binding for
+ * Homa::OutMessage::registerCallbackEndState
  */
-extern void homa_outmsg_register_cb(homa_outmsg out_msg, void (*cb) (void*),
-                                    void *data);
+extern void homa_outmsg_register_cb_end_state(homa_outmsg out_msg,
+                                              void (*cb) (void*),
+                                              void *data);
 
 /**
  * homa_outmsg_release - C-binding for Homa::OutMessage::release
@@ -207,14 +209,28 @@ extern uint64_t homa_trans_id(homa_trans trans);
 extern void homa_trans_proc(homa_trans trans, void *pkt, uint32_t src_ip);
 
 /**
+ * homa_trans_try_send - C-binding for
+ * Homa::Transport::registerCallbackSendReady
+ */
+extern void homa_trans_register_cb_send_ready(homa_trans trans,
+                                              void *(*cb) (void*), void *data);
+
+/**
+ * homa_trans_try_send - C-binding for
+ * Homa::Transport::registerCallbackNeedGrants
+ */
+extern void homa_trans_register_cb_need_grants(homa_trans trans,
+                                               void *(*cb) (void*), void *data);
+
+/**
  * homa_trans_try_send - C-binding for Homa::Transport::trySend
  */
-extern void homa_trans_try_send(homa_trans trans);
+extern bool homa_trans_try_send(homa_trans trans, uint64_t *wait_until);
 
 /**
  * homa_trans_try_grant - C-binding for Homa::Transport::trySendGrants
  */
-extern void homa_trans_try_grant(homa_trans trans);
+extern bool homa_trans_try_grant(homa_trans trans);
 
 #ifdef __cplusplus
 }

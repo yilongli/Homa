@@ -49,11 +49,13 @@ Sender::Sender(uint64_t transportId, Driver* driver,
     , policyManager(policyManager)
     , nextMessageSequenceNumber(1)
     , DRIVER_QUEUED_BYTE_LIMIT(2 * driver->getMaxPayloadSize())
+    , DRIVER_CYCLES_TO_DRAIN_1MB(PerfUtils::Cycles::fromSeconds(1) * 8 /
+                                 driver->getBandwidth())
     , messageBuckets(messageTimeoutCycles, pingIntervalCycles)
     , queueMutex()
-    , sendQueue()
-    , sending()
     , sendReady(false)
+    , notifySendReady()
+    , sendQueue()
     , messageAllocator()
 {}
 
@@ -205,7 +207,7 @@ Sender::handleResendPacket(Driver::Packet* packet)
         // will never be overridden since the resend index will not exceed the
         // preset packetsGranted.
         info->priority = header->priority;
-        sendReady.store(true);
+        signalPacerThread(lock_queue);
     }
 
     if (index >= info->packetsSent) {
@@ -284,7 +286,7 @@ Sender::handleGrantPacket(Driver::Packet* packet)
             // limit will never be overridden since the incomingGrantIndex will
             // not exceed the preset packetsGranted.
             info->priority = header->priority;
-            sendReady.store(true);
+            signalPacerThread(lock_queue);
         }
     }
 
@@ -385,7 +387,7 @@ Sender::handleUnknownPacket(Driver::Packet* packet)
             Intrusive::deprioritize<Message>(
                 &sendQueue, &info->sendQueueNode,
                 QueuedMessageInfo::ComparePriority());
-            sendReady.store(true);
+            signalPacerThread(lock_queue);
         }
     } else {
         // The message is already considered "done" so the UNKNOWN packet
@@ -563,12 +565,12 @@ void
 Sender::Message::setStatus(OutMessage::Status newStatus)
 {
     state.store(newStatus, std::memory_order_release);
-    if (callback) {
+    if (notifyEndState) {
         switch (newStatus) {
             case OutMessage::Status::CANCELED:
             case OutMessage::Status::COMPLETED:
             case OutMessage::Status::FAILED:
-                callback(callbackData);
+                notifyEndState();
             default:
                 break;
         }
@@ -606,13 +608,12 @@ Sender::Message::prepend(const void* source, size_t count)
 }
 
 /**
- * @copydoc Homa::OutMessage::registerCallback()
+ * @copydoc Homa::OutMessage::registerCallbackEndState()
  */
 void
-Sender::Message::registerCallback(void (*func) (void*), void* data)
+Sender::Message::registerCallbackEndState(Callback func)
 {
-    callback = func;
-    callbackData = data;
+    notifyEndState = std::move(func);
 }
 
 /**
@@ -799,7 +800,7 @@ Sender::sendMessage(Sender::Message* message, SocketAddress destination)
         sendQueue.push_front(&info->sendQueueNode);
         Intrusive::deprioritize<Message>(&sendQueue, &info->sendQueueNode,
                                          QueuedMessageInfo::ComparePriority());
-        sendReady.store(true);
+        signalPacerThread(lock_queue);
     }
 }
 
@@ -941,24 +942,56 @@ Sender::checkPingTimeouts()
     return globalNextTimeout;
 }
 
+/// See Homa::Transport::registerCallbackSendReady()
+void
+Sender::registerCallbackSendReady(Callback func)
+{
+    notifySendReady = std::move(func);
+}
+
+/**
+ * Attempt to wake up the pacer thread that is responsible for calling trySend()
+ * repeatedly, if it's currently blocked waiting for packets to become ready to
+ * be sent.
+ *
+ * This method is called when new GRANTs arrive, when new outgoing messages
+ * appear, and when retransmission is requested.
+ *
+ * @param lockHeld
+ *      Reminder to hold the Sender::queueMutex during this call.
+ */
+void
+Sender::signalPacerThread(const SpinLock::Lock& lockHeld)
+{
+    (void)lockHeld;
+    sendReady = true;
+    if (notifySendReady) {
+        notifySendReady();
+    }
+}
+
 /**
  * Attempt to send out packets for any messages with unscheduled/granted bytes
  * in a way that limits queue buildup in the NIC.
  *
  * This method must be called eagerly to allow the Sender to make progress
  * toward sending outgoing messages.
+ *
+ * @param[out] waitUntil
+ *      Time to wait before next call, in microseconds, in order to allow
+ *      the NIC transmit queue to drain. Only set when this method returns
+ *      true.
+ * @return
+ *      True if more packets are ready to be transmitted when the method
+ *      returns; false, otherwise.
  */
-void
-Sender::trySend()
+bool
+Sender::trySend(uint64_t* waitUntil)
 {
     // Skip when there are no messages to send.
+    SpinLock::UniqueLock lock_queue(queueMutex);
     if (!sendReady) {
-        return;
-    }
-
-    // Skip sending if another thread is already working on it.
-    if (sending.test_and_set()) {
-        return;
+        return false;
     }
 
     /* The goal is to send out packets for messages that have bytes that have
@@ -967,7 +1000,6 @@ Sender::trySend()
      * Each time this method is called we will try to send enough packet to keep
      * the NIC busy but not too many as to cause excessive queue in the NIC.
      */
-    SpinLock::UniqueLock lock_queue(queueMutex);
     uint32_t queuedBytesEstimate = driver->getQueuedBytes();
     // Optimistically assume we will finish sending every granted packet this
     // round; we will set again sendReady if it turns out we don't finish.
@@ -1008,14 +1040,19 @@ Sender::trySend()
             // We have sent every granted packet.
             ++it;
         } else {
-            // We hit the DRIVER_QUEUED_BYTES_LIMIT; stop sending for now.
+            // We hit the DRIVER_QUEUED_BYTE_LIMIT; stop sending for now.
             // We didn't finish sending all granted packets.
             sendReady = true;
+            // Compute how much time the driver needs to drain its queue,
+            // then schedule to wake up a bit earlier to avoid blowing bubbles.
+            static const uint64_t us = PerfUtils::Cycles::fromMicroseconds(1);
+            *waitUntil = PerfUtils::Cycles::rdtsc() - 1 * us +
+                queuedBytesEstimate * DRIVER_CYCLES_TO_DRAIN_1MB / 1000000;
             break;
         }
     }
 
-    sending.clear();
+    return sendReady;
 }
 
 }  // namespace Core

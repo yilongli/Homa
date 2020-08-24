@@ -29,7 +29,7 @@ const uint64_t PING_INTERVAL_US = 3 * BASE_TIMEOUT_US;
 const uint64_t RESEND_INTERVAL_US = BASE_TIMEOUT_US;
 
 /**
- * Construct an instances of a Homa-based transport.
+ * Construct an instance of a Homa-based transport.
  *
  * @param driver
  *      Driver with which this transport should send and receive packets.
@@ -51,6 +51,20 @@ TransportImpl::TransportImpl(Driver* driver, MailboxDir* mailboxDir,
           new Receiver(driver, mailboxDir, policyManager.get(),
                        PerfUtils::Cycles::fromMicroseconds(MESSAGE_TIMEOUT_US),
                        PerfUtils::Cycles::fromMicroseconds(RESEND_INTERVAL_US)))
+    , mailboxDir(mailboxDir)
+{}
+
+/**
+ * Construct an instance of a Homa-based transport for unit testing.
+ */
+TransportImpl::TransportImpl(Driver* driver, MailboxDir* mailboxDir,
+                             Sender* sender, Receiver* receiver,
+                             uint64_t transportId)
+    : transportId(transportId)
+    , driver(driver)
+    , policyManager(new Policy::Manager(driver))
+    , sender(sender)
+    , receiver(receiver)
     , mailboxDir(mailboxDir)
 {}
 
@@ -129,18 +143,32 @@ TransportImpl::processPacket(Driver::Packet* packet, IpAddress sourceIp)
     }
 }
 
-/// See Homa::Transport::trySend()
+/// See Homa::Transport::registerCallbackSendReady()
 void
-TransportImpl::trySend()
+TransportImpl::registerCallbackSendReady(Callback func)
 {
-    sender->trySend();
+    sender->registerCallbackSendReady(func);
+}
+
+/// See Homa::Transport::registerCallbackNeedGrants()
+void
+TransportImpl::registerCallbackNeedGrants(Callback func)
+{
+    receiver->registerCallbackNeedGrants(func);
+}
+
+/// See Homa::Transport::trySend()
+bool
+TransportImpl::trySend(uint64_t* waitUntil)
+{
+    return sender->trySend(waitUntil);
 }
 
 /// See Homa::Transport::trySendGrants()
-void
+bool
 TransportImpl::trySendGrants()
 {
-    receiver->trySendGrants();
+    return receiver->trySendGrants();
 }
 
 /**

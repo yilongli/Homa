@@ -53,7 +53,8 @@ class Receiver {
     virtual void handleBusyPacket(Driver::Packet* packet);
     virtual void handlePingPacket(Driver::Packet* packet, IpAddress sourceIp);
     virtual uint64_t checkTimeouts();
-    virtual void trySendGrants();
+    virtual void registerCallbackNeedGrants(Callback func);
+    virtual bool trySendGrants();
 
   private:
     // Forward declaration
@@ -478,6 +479,15 @@ class Receiver {
     /// List of peers with inbound messages that require grants to complete.
     /// Access is protected by the schedulerMutex.
     Intrusive::List<Peer> scheduledPeers;
+
+    /// Hint whether there MIGHT be messages that need to be granted. Encoded
+    /// into a single bool so that checking if there is work to do is more
+    /// efficient. Access is protected by the schedulerMutex.
+    bool needGrants;
+
+    /// Callback function to be invoked when _needGrants_ flips from false to
+    /// true.
+    Callback notifyNeedGrants;
 
     /// True if the Receiver is executing trySendGrants(); false, otherwise.
     /// Used to prevent concurrent calls to trySendGrants() from blocking on

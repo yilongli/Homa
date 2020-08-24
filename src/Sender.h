@@ -53,7 +53,8 @@ class Sender {
     virtual void handleUnknownPacket(Driver::Packet* packet);
     virtual void handleErrorPacket(Driver::Packet* packet);
     virtual uint64_t checkTimeouts();
-    virtual void trySend();
+    virtual void registerCallbackSendReady(Callback func);
+    virtual bool trySend(uint64_t* waitUntil);
 
   private:
     /// Forward declarations
@@ -133,8 +134,6 @@ class Sender {
          */
         explicit Message(Sender* sender, uint16_t sourcePort)
             : sender(sender)
-            , callback()
-            , callbackData()
             , driver(sender->driver)
             , TRANSPORT_HEADER_LENGTH(sizeof(Protocol::Packet::DataHeader))
             , PACKET_DATA_LENGTH(driver->getMaxPayloadSize() -
@@ -149,6 +148,7 @@ class Sender {
             // packets is not initialized to reduce the work done during
             // construction. See Message::occupied.
             , state(Status::NOT_STARTED)
+            , notifyEndState()
             , bucketNode(this)
             , messageTimeout(this)
             , pingTimeout(this)
@@ -160,7 +160,7 @@ class Sender {
         virtual void cancel();
         virtual Status getStatus() const;
         virtual void prepend(const void* source, size_t count);
-        virtual void registerCallback(void (*func) (void*), void* data);
+        virtual void registerCallbackEndState(Callback func);
         virtual void release();
         virtual void reserve(size_t count);
         virtual void send(SocketAddress destination);
@@ -176,12 +176,6 @@ class Sender {
 
         /// The Sender responsible for sending this message.
         Sender* const sender;
-
-        /// Callback function to invoke when _state_ reaches its end state.
-        void (*callback) (void*);
-
-        /// Input argument to _callback_.
-        void *callbackData;
 
         /// Driver from which packets were allocated and to which they should be
         /// returned when this message is no longer needed.
@@ -222,6 +216,9 @@ class Sender {
 
         /// This message's current state.
         std::atomic<Status> state;
+
+        /// Callback function to invoke when _state_ reaches an end state.
+        Callback notifyEndState;
 
         /// Intrusive structure used by the Sender to hold on to this Message
         /// in one of the Sender's MessageBuckets.  Access to this structure
@@ -393,6 +390,7 @@ class Sender {
         Protocol::MessageId::Hasher hasher;
     };
 
+    void signalPacerThread(const SpinLock::Lock& lockHeld);
     void sendMessage(Sender::Message* message, SocketAddress destination);
     void cancelMessage(Sender::Message* message);
     void dropMessage(Sender::Message* message);
@@ -415,24 +413,27 @@ class Sender {
     /// The maximum number of bytes that should be queued in the Driver.
     const uint32_t DRIVER_QUEUED_BYTE_LIMIT;
 
+    /// Rdtsc cycles for the Driver to drain one MB of data at line rate.
+    const uint32_t DRIVER_CYCLES_TO_DRAIN_1MB;
+
     /// Tracks all outbound messages being sent by the Sender.
     MessageBucketMap messageBuckets;
 
-    /// Protects the readyQueue.
+    /// Protects the sendQueue and sendReady.
     SpinLock queueMutex;
-
-    /// A list of outbound messages that have unsent packets.  Messages are kept
-    /// in order of priority.
-    Intrusive::List<Message> sendQueue;
-
-    /// True if the Sender is currently executing trySend(); false, otherwise.
-    /// Use to prevent concurrent trySend() calls from blocking on each other.
-    std::atomic_flag sending = ATOMIC_FLAG_INIT;
 
     /// Hint whether there are messages ready to be sent (i.e. there are granted
     /// messages in the sendQueue. Encoded into a single bool so that checking
     /// if there is work to do is more efficient.
-    std::atomic<bool> sendReady;
+    bool sendReady;
+
+    /// Callback function to be invoked when _sendReady_ flips from false to
+    /// true.
+    Callback notifySendReady;
+
+    /// A list of outbound messages that have unsent packets.  Messages are kept
+    /// in order of priority.
+    Intrusive::List<Message> sendQueue;
 
     /// Used to allocate Message objects.
     struct {

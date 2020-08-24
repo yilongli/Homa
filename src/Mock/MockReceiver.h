@@ -43,7 +43,7 @@ class MockReceiver : public Core::Receiver {
     MOCK_METHOD(void, handlePingPacket,
                 (Driver::Packet* packet, IpAddress sourceIp), (override));
     MOCK_METHOD(uint64_t, checkTimeouts, (), (override));
-    MOCK_METHOD(void, trySendGrants, (), (override));
+    MOCK_METHOD(bool, trySendGrants, (), (override));
 };
 
 }  // namespace Mock

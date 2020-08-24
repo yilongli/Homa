@@ -875,6 +875,7 @@ TEST_F(ReceiverTest, trySendGrants)
     EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
         .Times(1);
 
+    receiver->needGrants = true;
     receiver->trySendGrants();
 
     EXPECT_EQ(1, info[0]->priority);
@@ -901,6 +902,7 @@ TEST_F(ReceiverTest, trySendGrants)
     EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
         .Times(1);
 
+    receiver->needGrants = true;
     receiver->trySendGrants();
 
     EXPECT_EQ(0, info[1]->priority);
@@ -920,6 +922,7 @@ TEST_F(ReceiverTest, trySendGrants)
         .WillOnce(Return(policy));
     EXPECT_CALL(mockDriver, sendPacket(_, _, _)).Times(0);
 
+    receiver->needGrants = true;
     receiver->trySendGrants();
 
     EXPECT_EQ(1, info[1]->priority);
@@ -939,6 +942,7 @@ TEST_F(ReceiverTest, trySendGrants)
         .WillOnce(Return(policy));
     EXPECT_CALL(mockDriver, sendPacket(_, _, _)).Times(0);
 
+    receiver->needGrants = true;
     receiver->trySendGrants();
 
     EXPECT_EQ(2, info[1]->priority);

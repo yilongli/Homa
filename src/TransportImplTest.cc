@@ -38,37 +38,43 @@ using ::testing::SetArrayArgument;
 class TransportImplTest : public ::testing::Test {
   public:
     TransportImplTest()
-        : mockDriver()
-        , transport(new TransportImpl(&mockDriver, nullptr, 22))
-        , poller(transport)
+        : mockDriver(allocMockDriver())
         , mockSender(
-              new NiceMock<Homa::Mock::MockSender>(22, &mockDriver, 0, 0))
+              new NiceMock<Homa::Mock::MockSender>(22, mockDriver, 0, 0))
         , mockReceiver(
-              new NiceMock<Homa::Mock::MockReceiver>(&mockDriver, 0, 0))
+              new NiceMock<Homa::Mock::MockReceiver>(mockDriver, 0, 0))
+        , transport(new TransportImpl(mockDriver, nullptr, mockSender,
+                                      mockReceiver, 22))
+        , poller(transport)
     {
-        transport->sender.reset(mockSender);
-        transport->receiver.reset(mockReceiver);
-        ON_CALL(mockDriver, getBandwidth).WillByDefault(Return(8000));
-        ON_CALL(mockDriver, getMaxPayloadSize).WillByDefault(Return(1024));
         PerfUtils::Cycles::mockTscValue = 10000;
     }
 
     ~TransportImplTest()
     {
         delete transport;
+        delete mockDriver;
         PerfUtils::Cycles::mockTscValue = 0;
     }
 
-    NiceMock<Homa::Mock::MockDriver> mockDriver;
-    TransportImpl* transport;
-    TransportPoller poller;
+    NiceMock<Homa::Mock::MockDriver>* allocMockDriver()
+    {
+        auto driver = new NiceMock<Homa::Mock::MockDriver>();
+        ON_CALL(*driver, getBandwidth).WillByDefault(Return(8000));
+        ON_CALL(*driver, getMaxPayloadSize).WillByDefault(Return(1024));
+        return driver;
+    }
+
+    NiceMock<Homa::Mock::MockDriver>* mockDriver;
     NiceMock<Homa::Mock::MockSender>* mockSender;
     NiceMock<Homa::Mock::MockReceiver>* mockReceiver;
+    TransportImpl* transport;
+    TransportPoller poller;
 };
 
 TEST_F(TransportImplTest, poll)
 {
-    EXPECT_CALL(mockDriver, receivePackets).WillOnce(Return(0));
+    EXPECT_CALL(*mockDriver, receivePackets).WillOnce(Return(0));
     EXPECT_CALL(*mockSender, trySend).Times(1);
     EXPECT_CALL(*mockReceiver, trySendGrants).Times(1);
     EXPECT_CALL(*mockSender, checkTimeouts).WillOnce(Return(10000));
@@ -78,7 +84,7 @@ TEST_F(TransportImplTest, poll)
 
     EXPECT_EQ(10000U, poller.nextTimeoutCycles);
 
-    EXPECT_CALL(mockDriver, receivePackets).WillOnce(Return(0));
+    EXPECT_CALL(*mockDriver, receivePackets).WillOnce(Return(0));
     EXPECT_CALL(*mockSender, trySend).Times(1);
     EXPECT_CALL(*mockReceiver, trySendGrants).Times(1);
     EXPECT_CALL(*mockSender, checkTimeouts).WillOnce(Return(10200));
@@ -88,7 +94,7 @@ TEST_F(TransportImplTest, poll)
 
     EXPECT_EQ(10100U, poller.nextTimeoutCycles);
 
-    EXPECT_CALL(mockDriver, receivePackets).WillOnce(Return(0));
+    EXPECT_CALL(*mockDriver, receivePackets).WillOnce(Return(0));
     EXPECT_CALL(*mockSender, trySend).Times(1);
     EXPECT_CALL(*mockReceiver, trySendGrants).Times(1);
     EXPECT_CALL(*mockSender, checkTimeouts).Times(0);
@@ -160,7 +166,7 @@ TEST_F(TransportImplTest, processPackets)
     packets[7] = &errorPacket;
     EXPECT_CALL(*mockSender, handleErrorPacket(Eq(&errorPacket)));
 
-    EXPECT_CALL(mockDriver, receivePackets)
+    EXPECT_CALL(*mockDriver, receivePackets)
         .WillOnce(DoAll(SetArrayArgument<1>(packets, packets + 8), Return(8)));
 
     poller.processPackets();
