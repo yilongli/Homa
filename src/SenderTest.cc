@@ -29,18 +29,26 @@ using ::testing::_;
 using ::testing::Eq;
 using ::testing::Mock;
 using ::testing::NiceMock;
-using ::testing::Pointee;
 using ::testing::Return;
+
+/**
+ * Defines a matcher EqPacket(p) to match two Driver::Packet* by their
+ * underlying packet buffer descriptors.
+ */
+MATCHER_P(EqPacket, p, "") { return arg->descriptor == p->descriptor; }
 
 class SenderTest : public ::testing::Test {
   public:
     SenderTest()
         : mockDriver()
-        , mockPacket {&payload}
+        , mockPacket()
         , mockPolicyManager(&mockDriver)
+        , payload()
+        , packetBuf {&payload}
         , sender()
         , savedLogPolicy(Debug::getLogPolicy())
     {
+        mockPacket = packetBuf.toPacket();
         ON_CALL(mockDriver, getBandwidth).WillByDefault(Return(8000));
         ON_CALL(mockDriver, getMaxPayloadSize).WillByDefault(Return(1031));
         ON_CALL(mockDriver, getQueuedBytes).WillByDefault(Return(0));
@@ -59,9 +67,10 @@ class SenderTest : public ::testing::Test {
     }
 
     NiceMock<Homa::Mock::MockDriver> mockDriver;
-    Homa::Mock::MockDriver::MockPacket mockPacket;
+    Driver::Packet mockPacket;
     NiceMock<Homa::Mock::MockPolicyManager> mockPolicyManager;
     char payload[1028];
+    Homa::Mock::MockDriver::PacketBuf packetBuf;
     Sender* sender;
     std::vector<std::pair<std::string, std::string>> savedLogPolicy;
 
@@ -96,7 +105,7 @@ class SenderTest : public ::testing::Test {
     }
 
     static bool setMessagePacket(Sender::Message* message, int index,
-                                 Driver::Packet* packet)
+                                 Driver::Packet packet)
     {
         if (message->occupied.test(index)) {
             return false;
@@ -139,7 +148,7 @@ TEST_F(SenderTest, handleDonePacket_basic)
         static_cast<Protocol::Packet::DoneHeader*>(mockPacket.payload);
     header->common.messageId = id;
 
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(2);
 
     // No message.
@@ -170,7 +179,7 @@ TEST_F(SenderTest, handleDonePacket_CANCELED)
         static_cast<Protocol::Packet::DoneHeader*>(mockPacket.payload);
     header->common.messageId = id;
 
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
 
     sender->handleDonePacket(&mockPacket);
@@ -188,7 +197,7 @@ TEST_F(SenderTest, handleDonePacket_COMPLETED)
         static_cast<Protocol::Packet::DoneHeader*>(mockPacket.payload);
     header->common.messageId = id;
 
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
 
     VectorHandler handler;
@@ -219,7 +228,7 @@ TEST_F(SenderTest, handleDonePacket_FAILED)
         static_cast<Protocol::Packet::DoneHeader*>(mockPacket.payload);
     header->common.messageId = id;
 
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
 
     VectorHandler handler;
@@ -252,7 +261,7 @@ TEST_F(SenderTest, handleDonePacket_IN_PROGRESS)
         static_cast<Protocol::Packet::DoneHeader*>(mockPacket.payload);
     header->common.messageId = id;
 
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
 
     VectorHandler handler;
@@ -285,7 +294,7 @@ TEST_F(SenderTest, handleDonePacket_NO_STARTED)
         static_cast<Protocol::Packet::DoneHeader*>(mockPacket.payload);
     header->common.messageId = id;
 
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
 
     VectorHandler handler;
@@ -311,10 +320,11 @@ TEST_F(SenderTest, handleResendPacket_basic)
     Protocol::MessageId id = {42, 1};
     Sender::Message* message =
         dynamic_cast<Sender::Message*>(sender->allocMessage(0));
-    std::vector<Homa::Mock::MockDriver::MockPacket*> packets;
+    std::vector<Driver::Packet> packets;
     std::vector<int> priorities;
     for (int i = 0; i < 10; ++i) {
-        packets.push_back(new Homa::Mock::MockDriver::MockPacket {payload});
+        auto* packetBuf = new Homa::Mock::MockDriver::PacketBuf{payload};
+        packets.push_back(packetBuf->toPacket());
         priorities.push_back(0);
         setMessagePacket(message, i, packets[i]);
     }
@@ -333,11 +343,11 @@ TEST_F(SenderTest, handleResendPacket_basic)
     resendHdr->priority = 4;
 
     EXPECT_CALL(mockPolicyManager, getResendPriority).WillOnce(Return(7));
-    EXPECT_CALL(mockDriver, sendPacket(Eq(packets[3]), _, _)).WillOnce(
+    EXPECT_CALL(mockDriver, sendPacket(EqPacket(&packets[3]), _, _)).WillOnce(
             [&priorities] (auto _1, auto _2, int p) { priorities[3] = p; });
-    EXPECT_CALL(mockDriver, sendPacket(Eq(packets[4]), _, _)).WillOnce(
+    EXPECT_CALL(mockDriver, sendPacket(EqPacket(&packets[4]), _, _)).WillOnce(
             [&priorities] (auto _1, auto _2, int p) { priorities[4] = p; });
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
 
     sender->handleResendPacket(&mockPacket);
@@ -354,7 +364,8 @@ TEST_F(SenderTest, handleResendPacket_basic)
     EXPECT_TRUE(sender->sendReady);
 
     for (int i = 0; i < 10; ++i) {
-        delete packets[i];
+        uintptr_t packetBuf = packets[i].descriptor;
+        delete (Homa::Mock::MockDriver::PacketBuf*) packetBuf;
     }
 }
 
@@ -367,7 +378,7 @@ TEST_F(SenderTest, handleResendPacket_staleResend)
     resendHdr->index = 3;
     resendHdr->num = 5;
 
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
 
     sender->handleResendPacket(&mockPacket);
@@ -380,8 +391,9 @@ TEST_F(SenderTest, handleResendPacket_badRequest_singlePacketMessage)
     Sender::Message* message =
         dynamic_cast<Sender::Message*>(sender->allocMessage(0));
     SenderTest::addMessage(sender, id, message);
-    Homa::Mock::MockDriver::MockPacket* packet =
-        new Homa::Mock::MockDriver::MockPacket {payload};
+    Homa::Mock::MockDriver::PacketBuf* packetBuf =
+        new Homa::Mock::MockDriver::PacketBuf {payload};
+    Driver::Packet packet = packetBuf->toPacket();
     setMessagePacket(message, 0, packet);
 
     Protocol::Packet::ResendHeader* resendHdr =
@@ -391,7 +403,7 @@ TEST_F(SenderTest, handleResendPacket_badRequest_singlePacketMessage)
     resendHdr->num = 5;
     resendHdr->priority = 4;
 
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
 
     VectorHandler handler;
@@ -411,7 +423,7 @@ TEST_F(SenderTest, handleResendPacket_badRequest_singlePacketMessage)
 
     Debug::setLogHandler(std::function<void(Debug::DebugMessage)>());
 
-    delete packet;
+    delete packetBuf;
 }
 
 TEST_F(SenderTest, handleResendPacket_badRequest_outOfRange)
@@ -419,9 +431,10 @@ TEST_F(SenderTest, handleResendPacket_badRequest_outOfRange)
     Protocol::MessageId id = {42, 1};
     Sender::Message* message =
         dynamic_cast<Sender::Message*>(sender->allocMessage(0));
-    std::vector<Homa::Mock::MockDriver::MockPacket*> packets;
+    std::vector<Driver::Packet> packets;
     for (int i = 0; i < 10; ++i) {
-        packets.push_back(new Homa::Mock::MockDriver::MockPacket {payload});
+        auto* packetBuf = new Homa::Mock::MockDriver::PacketBuf {payload};
+        packets.push_back(packetBuf->toPacket());
         setMessagePacket(message, i, packets[i]);
     }
     SenderTest::addMessage(sender, id, message, true, 5);
@@ -438,7 +451,7 @@ TEST_F(SenderTest, handleResendPacket_badRequest_outOfRange)
     resendHdr->num = 5;
     resendHdr->priority = 4;
 
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
 
     VectorHandler handler;
@@ -460,7 +473,8 @@ TEST_F(SenderTest, handleResendPacket_badRequest_outOfRange)
     Debug::setLogHandler(std::function<void(Debug::DebugMessage)>());
 
     for (int i = 0; i < 10; ++i) {
-        delete packets[i];
+        uintptr_t packetBuf = packets[i].descriptor;
+        delete (Homa::Mock::MockDriver::PacketBuf*) packetBuf;
     }
 }
 
@@ -470,9 +484,10 @@ TEST_F(SenderTest, handleResendPacket_eagerResend)
     Sender::Message* message =
         dynamic_cast<Sender::Message*>(sender->allocMessage(0));
     char data[1028];
-    Homa::Mock::MockDriver::MockPacket dataPacket {data};
+    Homa::Mock::MockDriver::PacketBuf dataPacketBuf {data};
+    Driver::Packet dataPacket = dataPacketBuf.toPacket();
     for (int i = 0; i < 10; ++i) {
-        setMessagePacket(message, i, &dataPacket);
+        setMessagePacket(message, i, dataPacket);
     }
     SenderTest::addMessage(sender, id, message, true, 5);
     Sender::QueuedMessageInfo* info = &message->queuedMessageInfo;
@@ -488,15 +503,16 @@ TEST_F(SenderTest, handleResendPacket_eagerResend)
 
     // Expect the BUSY control packet.
     char busy[1028];
-    Homa::Mock::MockDriver::MockPacket busyPacket {busy};
-    EXPECT_CALL(mockDriver, allocPacket()).WillOnce(Return(&busyPacket));
-    EXPECT_CALL(mockDriver, sendPacket(Eq(&busyPacket), _, _)).Times(1);
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&busyPacket), Eq(1)))
+    Homa::Mock::MockDriver::PacketBuf busyPacketBuf {busy};
+    Driver::Packet busyPacket = busyPacketBuf.toPacket();
+    EXPECT_CALL(mockDriver, allocPacket()).WillOnce(Return(busyPacket));
+    EXPECT_CALL(mockDriver, sendPacket(EqPacket(&busyPacket), _, _)).Times(1);
+    EXPECT_CALL(mockDriver, releasePackets(EqPacket(&busyPacket), Eq(1)))
         .Times(1);
 
     // Expect no data to be sent but the RESEND packet to be release.
-    EXPECT_CALL(mockDriver, sendPacket(Eq(&dataPacket), _, _)).Times(0);
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, sendPacket(EqPacket(&dataPacket), _, _)).Times(0);
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
 
     sender->handleResendPacket(&mockPacket);
@@ -531,7 +547,7 @@ TEST_F(SenderTest, handleGrantPacket_basic)
     header->byteLimit = 7000;
     header->priority = 6;
 
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
 
     sender->handleGrantPacket(&mockPacket);
@@ -563,7 +579,7 @@ TEST_F(SenderTest, handleGrantPacket_excessiveGrant)
     header->byteLimit = 11000;
     header->priority = 6;
 
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
 
     VectorHandler handler;
@@ -609,7 +625,7 @@ TEST_F(SenderTest, handleGrantPacket_staleGrant)
     header->byteLimit = 4000;
     header->priority = 6;
 
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
 
     sender->handleGrantPacket(&mockPacket);
@@ -629,7 +645,7 @@ TEST_F(SenderTest, handleGrantPacket_dropGrant)
     header->common.messageId = id;
     header->byteLimit = 4000;
 
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
 
     sender->handleGrantPacket(&mockPacket);
@@ -644,13 +660,14 @@ TEST_F(SenderTest, handleUnknownPacket_basic)
 
     Sender::Message* message =
         dynamic_cast<Sender::Message*>(sender->allocMessage(0));
-    std::vector<Homa::Mock::MockDriver::MockPacket*> packets;
+    std::vector<Driver::Packet> packets;
     char payload[5][1028];
     for (int i = 0; i < 5; ++i) {
-        Homa::Mock::MockDriver::MockPacket* packet =
-            new Homa::Mock::MockDriver::MockPacket {payload[i]};
+        Homa::Mock::MockDriver::PacketBuf* packetBuf =
+            new Homa::Mock::MockDriver::PacketBuf {payload[i]};
+        Driver::Packet packet = packetBuf->toPacket();
         Protocol::Packet::DataHeader* header =
-            static_cast<Protocol::Packet::DataHeader*>(packet->payload);
+            static_cast<Protocol::Packet::DataHeader*>(packet.payload);
         header->policyVersion = policyOld.version;
         header->unscheduledIndexLimit = 2;
         packets.push_back(packet);
@@ -680,16 +697,15 @@ TEST_F(SenderTest, handleUnknownPacket_basic)
         mockPolicyManager,
         getUnscheduledPolicy(Eq(destination.ip), Eq(message->messageLength)))
         .WillOnce(Return(policyNew));
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
 
     sender->handleUnknownPacket(&mockPacket);
 
     EXPECT_EQ(Homa::OutMessage::Status::IN_PROGRESS, message->state);
     for (int i = 0; i < 3; ++i) {
-        Homa::Mock::MockDriver::MockPacket* packet = packets[i];
         Protocol::Packet::DataHeader* header =
-            static_cast<Protocol::Packet::DataHeader*>(packet->payload);
+            static_cast<Protocol::Packet::DataHeader*>(packets[i].payload);
         EXPECT_EQ(policyNew.version, header->policyVersion);
         EXPECT_EQ(3U, header->unscheduledIndexLimit);
     }
@@ -703,7 +719,8 @@ TEST_F(SenderTest, handleUnknownPacket_basic)
     EXPECT_TRUE(sender->sendReady);
 
     for (int i = 0; i < 5; ++i) {
-        delete packets[i];
+        uintptr_t packetBuf = packets[i].descriptor;
+        delete (Homa::Mock::MockDriver::PacketBuf*) packetBuf;
     }
 }
 
@@ -716,12 +733,13 @@ TEST_F(SenderTest, handleUnknownPacket_singlePacketMessage)
 
     Sender::Message* message =
         dynamic_cast<Sender::Message*>(sender->allocMessage(0));
-    Homa::Mock::MockDriver::MockPacket dataPacket {payload};
+    Homa::Mock::MockDriver::PacketBuf dataPacketBuf {payload};
+    Driver::Packet dataPacket = dataPacketBuf.toPacket();
     Protocol::Packet::DataHeader* dataHeader =
         static_cast<Protocol::Packet::DataHeader*>(dataPacket.payload);
     dataHeader->policyVersion = policyOld.version;
     dataHeader->unscheduledIndexLimit = 2;
-    setMessagePacket(message, 0, &dataPacket);
+    setMessagePacket(message, 0, dataPacket);
     message->destination = destination;
     message->messageLength = 500;
     message->state.store(Homa::OutMessage::Status::SENT);
@@ -739,8 +757,8 @@ TEST_F(SenderTest, handleUnknownPacket_singlePacketMessage)
         mockPolicyManager,
         getUnscheduledPolicy(Eq(destination.ip), Eq(message->messageLength)))
         .WillOnce(Return(policyNew));
-    EXPECT_CALL(mockDriver, sendPacket(Eq(&dataPacket), _, _)).Times(1);
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, sendPacket(Eq(message->packets), _, _)).Times(1);
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
 
     sender->handleUnknownPacket(&mockPacket);
@@ -763,7 +781,7 @@ TEST_F(SenderTest, handleUnknownPacket_no_message)
         static_cast<Protocol::Packet::UnknownHeader*>(mockPacket.payload);
     header->common.messageId = id;
 
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
 
     sender->handleUnknownPacket(&mockPacket);
@@ -783,7 +801,7 @@ TEST_F(SenderTest, handleUnknownPacket_done)
         static_cast<Protocol::Packet::UnknownHeader*>(mockPacket.payload);
     header->common.messageId = id;
 
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
 
     sender->handleUnknownPacket(&mockPacket);
@@ -808,7 +826,7 @@ TEST_F(SenderTest, handleErrorPacket_basic)
         static_cast<Protocol::Packet::ErrorHeader*>(mockPacket.payload);
     header->common.messageId = id;
 
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
 
     sender->handleErrorPacket(&mockPacket);
@@ -831,7 +849,7 @@ TEST_F(SenderTest, handleErrorPacket_CANCELED)
         static_cast<Protocol::Packet::ErrorHeader*>(mockPacket.payload);
     header->common.messageId = id;
 
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
 
     sender->handleErrorPacket(&mockPacket);
@@ -852,7 +870,7 @@ TEST_F(SenderTest, handleErrorPacket_NOT_STARTED)
         static_cast<Protocol::Packet::ErrorHeader*>(mockPacket.payload);
     header->common.messageId = id;
 
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
 
     VectorHandler handler;
@@ -888,7 +906,7 @@ TEST_F(SenderTest, handleErrorPacket_IN_PROGRESS)
         static_cast<Protocol::Packet::ErrorHeader*>(mockPacket.payload);
     header->common.messageId = id;
 
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
 
     VectorHandler handler;
@@ -924,7 +942,7 @@ TEST_F(SenderTest, handleErrorPacket_COMPLETED)
         static_cast<Protocol::Packet::ErrorHeader*>(mockPacket.payload);
     header->common.messageId = id;
 
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
 
     VectorHandler handler;
@@ -960,7 +978,7 @@ TEST_F(SenderTest, handleErrorPacket_FAILED)
         static_cast<Protocol::Packet::ErrorHeader*>(mockPacket.payload);
     header->common.messageId = id;
 
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
 
     VectorHandler handler;
@@ -987,7 +1005,7 @@ TEST_F(SenderTest, handleErrorPacket_noMessage)
     Protocol::Packet::ErrorHeader* header =
         static_cast<Protocol::Packet::ErrorHeader*>(mockPacket.payload);
     header->common.messageId = id;
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, releasePackets(Eq(&mockPacket), Eq(1)))
         .Times(1);
     sender->handleErrorPacket(&mockPacket);
 }
@@ -1042,8 +1060,8 @@ TEST_F(SenderTest, Message_append_basic)
         .WillByDefault(Return(MAX_RAW_PACKET_LENGTH));
     Sender::Message msg(sender, 0);
     char buf[2 * MAX_RAW_PACKET_LENGTH];
-    Homa::Mock::MockDriver::MockPacket packet0 {buf + 0};
-    Homa::Mock::MockDriver::MockPacket packet1 {buf + MAX_RAW_PACKET_LENGTH};
+    Homa::Mock::MockDriver::PacketBuf packetBuf0 {buf + 0};
+    Homa::Mock::MockDriver::PacketBuf packetBuf1 {buf + MAX_RAW_PACKET_LENGTH};
 
     const int TRANSPORT_HEADER_LENGTH = msg.TRANSPORT_HEADER_LENGTH;
     const int PACKET_DATA_LENGTH = msg.PACKET_DATA_LENGTH;
@@ -1052,19 +1070,19 @@ TEST_F(SenderTest, Message_append_basic)
               TRANSPORT_HEADER_LENGTH + PACKET_DATA_LENGTH);
 
     char source[] = "Hello, world!";
-    setMessagePacket(&msg, 0, &packet0);
-    packet0.length = MAX_RAW_PACKET_LENGTH - 7;
+    setMessagePacket(&msg, 0, packetBuf0.toPacket(MAX_RAW_PACKET_LENGTH - 7));
     msg.messageLength = PACKET_DATA_LENGTH - 7;
 
-    EXPECT_CALL(mockDriver, allocPacket).WillOnce(Return(&packet1));
+    EXPECT_CALL(mockDriver, allocPacket)
+        .WillOnce(Return(packetBuf1.toPacket()));
 
     msg.append(source, 14);
 
     EXPECT_EQ(PACKET_DATA_LENGTH + 7, msg.messageLength);
     EXPECT_EQ(2U, msg.numPackets);
-    EXPECT_TRUE(msg.packets[1] == &packet1);
-    EXPECT_EQ(MAX_RAW_PACKET_LENGTH, packet0.length);
-    EXPECT_EQ(TRANSPORT_HEADER_LENGTH + 7, packet1.length);
+    EXPECT_EQ(msg.packets[1].payload, packetBuf1.buffer);
+    EXPECT_EQ(MAX_RAW_PACKET_LENGTH, msg.packets[0].length);
+    EXPECT_EQ(TRANSPORT_HEADER_LENGTH + 7, msg.packets[1].length);
     EXPECT_TRUE(std::memcmp(buf + MAX_RAW_PACKET_LENGTH - 7, source, 7) == 0);
     EXPECT_TRUE(
         std::memcmp(buf + MAX_RAW_PACKET_LENGTH + TRANSPORT_HEADER_LENGTH,
@@ -1081,16 +1099,13 @@ TEST_F(SenderTest, Message_append_truncated)
     ON_CALL(mockDriver, getMaxPayloadSize)
         .WillByDefault(Return(MAX_RAW_PACKET_LENGTH));
     Sender::Message msg(sender, 0);
-    char buf[2 * MAX_RAW_PACKET_LENGTH];
-    Homa::Mock::MockDriver::MockPacket packet0 {buf + 0};
-    Homa::Mock::MockDriver::MockPacket packet1 {buf + MAX_RAW_PACKET_LENGTH};
-
-    const int TRANSPORT_HEADER_LENGTH = msg.TRANSPORT_HEADER_LENGTH;
-    const int PACKET_DATA_LENGTH = msg.PACKET_DATA_LENGTH;
+    char buf[MAX_RAW_PACKET_LENGTH];
+    Homa::Mock::MockDriver::PacketBuf packetBuf {buf};
 
     char source[] = "Hello, world!";
-    setMessagePacket(&msg, msg.MAX_MESSAGE_PACKETS - 1, &packet0);
-    packet0.length = msg.TRANSPORT_HEADER_LENGTH + msg.PACKET_DATA_LENGTH - 7;
+    setMessagePacket(&msg, msg.MAX_MESSAGE_PACKETS - 1, packetBuf.toPacket());
+    Driver::Packet& packet = msg.packets[msg.MAX_MESSAGE_PACKETS - 1];
+    packet.length = msg.TRANSPORT_HEADER_LENGTH + msg.PACKET_DATA_LENGTH - 7;
     msg.messageLength = msg.PACKET_DATA_LENGTH * msg.MAX_MESSAGE_PACKETS - 7;
     EXPECT_EQ(1U, msg.numPackets);
 
@@ -1100,7 +1115,7 @@ TEST_F(SenderTest, Message_append_truncated)
               msg.messageLength);
     EXPECT_EQ(1U, msg.numPackets);
     EXPECT_EQ(msg.TRANSPORT_HEADER_LENGTH + msg.PACKET_DATA_LENGTH,
-              packet0.length);
+              packet.length);
     EXPECT_TRUE(std::memcmp(buf + MAX_RAW_PACKET_LENGTH - 7, source, 7) == 0);
 
     EXPECT_EQ(1U, handler.messages.size());
@@ -1130,14 +1145,16 @@ TEST_F(SenderTest, Message_prepend)
     ON_CALL(mockDriver, getMaxPayloadSize).WillByDefault(Return(2048));
     Sender::Message msg(sender, 0);
     char buf[4096];
-    Homa::Mock::MockDriver::MockPacket packet0 {buf + 0};
-    Homa::Mock::MockDriver::MockPacket packet1 {buf + 2048};
+    Homa::Mock::MockDriver::PacketBuf packetBuf0 {buf + 0};
+    Homa::Mock::MockDriver::PacketBuf packetBuf1 {buf + 2048};
+    Driver::Packet packet0 = packetBuf0.toPacket();
+    Driver::Packet packet1 = packetBuf1.toPacket();
 
     const int TRANSPORT_HEADER_LENGTH = msg.TRANSPORT_HEADER_LENGTH;
     const int PACKET_DATA_LENGTH = msg.PACKET_DATA_LENGTH;
     EXPECT_CALL(mockDriver, allocPacket)
-        .WillOnce(Return(&packet0))
-        .WillOnce(Return(&packet1));
+        .WillOnce(Return(packet0))
+        .WillOnce(Return(packet1));
     msg.reserve(PACKET_DATA_LENGTH + 7);
     EXPECT_EQ(PACKET_DATA_LENGTH + 7, msg.start);
     EXPECT_EQ(PACKET_DATA_LENGTH + 7, msg.messageLength);
@@ -1165,8 +1182,8 @@ TEST_F(SenderTest, Message_reserve)
 {
     Sender::Message msg(sender, 0);
     char buf[4096];
-    Homa::Mock::MockDriver::MockPacket packet0 {buf + 0};
-    Homa::Mock::MockDriver::MockPacket packet1 {buf + 2048};
+    Homa::Mock::MockDriver::PacketBuf packetBuf0 {buf + 0};
+    Homa::Mock::MockDriver::PacketBuf packetBuf1 {buf + 2048};
 
     const int TRANSPORT_HEADER_LENGTH = msg.TRANSPORT_HEADER_LENGTH;
     const int PACKET_DATA_LENGTH = msg.PACKET_DATA_LENGTH;
@@ -1175,26 +1192,28 @@ TEST_F(SenderTest, Message_reserve)
     EXPECT_EQ(0U, msg.messageLength);
     EXPECT_EQ(0U, msg.numPackets);
 
-    EXPECT_CALL(mockDriver, allocPacket).WillOnce(Return(&packet0));
+    EXPECT_CALL(mockDriver, allocPacket)
+        .WillOnce(Return(packetBuf0.toPacket()));
 
     msg.reserve(PACKET_DATA_LENGTH - 7);
 
     EXPECT_EQ(PACKET_DATA_LENGTH - 7, msg.start);
     EXPECT_EQ(PACKET_DATA_LENGTH - 7, msg.messageLength);
     EXPECT_EQ(1U, msg.numPackets);
-    EXPECT_EQ(&packet0, msg.getPacket(0));
-    EXPECT_EQ(TRANSPORT_HEADER_LENGTH + PACKET_DATA_LENGTH - 7, packet0.length);
+    EXPECT_EQ(TRANSPORT_HEADER_LENGTH + PACKET_DATA_LENGTH - 7,
+        msg.packets[0].length);
 
-    EXPECT_CALL(mockDriver, allocPacket).WillOnce(Return(&packet1));
+    EXPECT_CALL(mockDriver, allocPacket)
+        .WillOnce(Return(packetBuf1.toPacket()));
 
     msg.reserve(14);
 
     EXPECT_EQ(PACKET_DATA_LENGTH + 7, msg.start);
     EXPECT_EQ(PACKET_DATA_LENGTH + 7, msg.messageLength);
     EXPECT_EQ(2U, msg.numPackets);
-    EXPECT_EQ(TRANSPORT_HEADER_LENGTH + PACKET_DATA_LENGTH, packet0.length);
-    EXPECT_EQ(&packet1, msg.getPacket(1));
-    EXPECT_EQ(TRANSPORT_HEADER_LENGTH + 7, packet1.length);
+    EXPECT_EQ(TRANSPORT_HEADER_LENGTH + PACKET_DATA_LENGTH,
+        msg.packets[0].length);
+    EXPECT_EQ(TRANSPORT_HEADER_LENGTH + 7, msg.packets[1].length);
 }
 
 TEST_F(SenderTest, Message_send)
@@ -1205,8 +1224,8 @@ TEST_F(SenderTest, Message_send)
 TEST_F(SenderTest, Message_getPacket)
 {
     Sender::Message msg(sender, 0);
-    Driver::Packet* packet = (Driver::Packet*)42;
-    msg.packets[0] = packet;
+    msg.packets[0] = {};
+    Driver::Packet* packet = &msg.packets[0];
 
     EXPECT_EQ(nullptr, msg.getPacket(0));
 
@@ -1220,19 +1239,21 @@ TEST_F(SenderTest, Message_getOrAllocPacket)
     // TODO(cstlee): cleanup
     Sender::Message msg(sender, 0);
     char buf[4096];
-    Homa::Mock::MockDriver::MockPacket packet0 {buf + 0};
-    Homa::Mock::MockDriver::MockPacket packet1 {buf + 2048};
+    Homa::Mock::MockDriver::PacketBuf packetBuf0 {buf + 0};
+    Homa::Mock::MockDriver::PacketBuf packetBuf1 {buf + 2048};
+    Driver::Packet packet0 = packetBuf0.toPacket();
+    Driver::Packet packet1 = packetBuf1.toPacket();
 
     EXPECT_FALSE(msg.occupied.test(0));
     EXPECT_EQ(0U, msg.numPackets);
-    EXPECT_CALL(mockDriver, allocPacket).WillOnce(Return(&packet0));
+    EXPECT_CALL(mockDriver, allocPacket).WillOnce(Return(packet0));
 
-    EXPECT_TRUE(&packet0 == msg.getOrAllocPacket(0));
+    EXPECT_EQ(packet0.descriptor, msg.getOrAllocPacket(0)->descriptor);
 
     EXPECT_TRUE(msg.occupied.test(0));
     EXPECT_EQ(1U, msg.numPackets);
 
-    EXPECT_TRUE(&packet0 == msg.getOrAllocPacket(0));
+    EXPECT_EQ(packet0.descriptor, msg.getOrAllocPacket(0)->descriptor);
 
     EXPECT_TRUE(msg.occupied.test(0));
     EXPECT_EQ(1U, msg.numPackets);
@@ -1280,7 +1301,8 @@ TEST_F(SenderTest, sendMessage_basic)
         dynamic_cast<Sender::Message*>(sender->allocMessage(sport));
     Sender::MessageBucket* bucket = sender->messageBuckets.getBucket(id);
 
-    setMessagePacket(message, 0, &mockPacket);
+    setMessagePacket(message, 0, mockPacket);
+    Driver::Packet& mockPacket = message->packets[0];
     message->messageLength = 420;
     mockPacket.length =
         message->messageLength + message->TRANSPORT_HEADER_LENGTH;
@@ -1330,16 +1352,20 @@ TEST_F(SenderTest, sendMessage_multipacket)
 {
     char payload0[1027];
     char payload1[1027];
-    Homa::Mock::MockDriver::MockPacket packet0 {payload0};
-    Homa::Mock::MockDriver::MockPacket packet1 {payload1};
+    Homa::Mock::MockDriver::PacketBuf packetBuf0 {payload0};
+    Homa::Mock::MockDriver::PacketBuf packetBuf1 {payload1};
+
     Protocol::MessageId id = {sender->transportId,
                               sender->nextMessageSequenceNumber};
     Sender::Message* message =
         dynamic_cast<Sender::Message*>(sender->allocMessage(0));
     Sender::MessageBucket* bucket = sender->messageBuckets.getBucket(id);
 
-    setMessagePacket(message, 0, &packet0);
-    setMessagePacket(message, 1, &packet1);
+    setMessagePacket(message, 0, packetBuf0.toPacket());
+    setMessagePacket(message, 1, packetBuf1.toPacket());
+    Driver::Packet& packet0 = message->packets[0];
+    Driver::Packet& packet1 = message->packets[1];
+
     message->messageLength = 1420;
     packet0.length = 1000 + 31;
     packet1.length = 420 + 31;
@@ -1391,7 +1417,7 @@ TEST_F(SenderTest, sendMessage_missingPacket)
                               sender->nextMessageSequenceNumber};
     Sender::Message* message =
         dynamic_cast<Sender::Message*>(sender->allocMessage(0));
-    setMessagePacket(message, 1, &mockPacket);
+    setMessagePacket(message, 1, mockPacket);
     Core::Policy::Unscheduled policy = {1, 1000, 2};
     ON_CALL(mockPolicyManager, getUnscheduledPolicy(_, _))
         .WillByDefault(Return(policy));
@@ -1408,10 +1434,10 @@ TEST_F(SenderTest, sendMessage_unscheduledLimit)
     Sender::Message* message =
         dynamic_cast<Sender::Message*>(sender->allocMessage(0));
     for (int i = 0; i < 9; ++i) {
-        setMessagePacket(message, i, &mockPacket);
+        mockPacket.length = 1000 + sizeof(Protocol::Packet::DataHeader);
+        setMessagePacket(message, i, mockPacket);
     }
     message->messageLength = 9000;
-    mockPacket.length = 1000 + sizeof(Protocol::Packet::DataHeader);
     SocketAddress destination = {22, 60001};
     Core::Policy::Unscheduled policy = {1, 4500, 2};
     EXPECT_EQ(9U, message->numPackets);
@@ -1550,9 +1576,9 @@ TEST_F(SenderTest, checkPingTimeouts_basic)
 
     EXPECT_EQ(10000U, PerfUtils::Cycles::rdtsc());
 
-    EXPECT_CALL(mockDriver, allocPacket()).WillOnce(Return(&mockPacket));
-    EXPECT_CALL(mockDriver, sendPacket(Eq(&mockPacket), _, _)).Times(1);
-    EXPECT_CALL(mockDriver, releasePackets(Pointee(&mockPacket), Eq(1)))
+    EXPECT_CALL(mockDriver, allocPacket()).WillOnce(Return(mockPacket));
+    EXPECT_CALL(mockDriver, sendPacket(EqPacket(&mockPacket), _, _)).Times(1);
+    EXPECT_CALL(mockDriver, releasePackets(EqPacket(&mockPacket), Eq(1)))
         .Times(1);
 
     uint64_t nextTimeout = sender->checkPingTimeouts();
@@ -1591,14 +1617,15 @@ TEST_F(SenderTest, trySend_basic)
         dynamic_cast<Sender::Message*>(sender->allocMessage(0));
     Sender::QueuedMessageInfo* info = &message->queuedMessageInfo;
     SenderTest::addMessage(sender, id, message, true, 3);
-    Homa::Mock::MockDriver::MockPacket* packet[5];
+    Driver::Packet packet[5];
     uint64_t waitUntil;
     const uint32_t PACKET_SIZE = sender->driver->getMaxPayloadSize();
     const uint32_t PACKET_DATA_SIZE =
         PACKET_SIZE - message->TRANSPORT_HEADER_LENGTH;
     for (int i = 0; i < 5; ++i) {
-        packet[i] = new Homa::Mock::MockDriver::MockPacket {payload};
-        packet[i]->length = PACKET_SIZE;
+        auto* packetBuf = new Homa::Mock::MockDriver::PacketBuf {payload};
+        packet[i] = packetBuf->toPacket();
+        packet[i].length = PACKET_SIZE;
         setMessagePacket(message, i, packet[i]);
         info->unsentBytes += PACKET_DATA_SIZE;
     }
@@ -1612,8 +1639,8 @@ TEST_F(SenderTest, trySend_basic)
     EXPECT_TRUE(sender->sendQueue.contains(&info->sendQueueNode));
 
     // 3 granted packets; 2 will send; queue limit reached.
-    EXPECT_CALL(mockDriver, sendPacket(Eq(packet[0]), _, _));
-    EXPECT_CALL(mockDriver, sendPacket(Eq(packet[1]), _, _));
+    EXPECT_CALL(mockDriver, sendPacket(EqPacket(&packet[0]), _, _));
+    EXPECT_CALL(mockDriver, sendPacket(EqPacket(&packet[1]), _, _));
     sender->trySend(&waitUntil);  // < test call
     EXPECT_TRUE(sender->sendReady);
     EXPECT_EQ(Homa::OutMessage::Status::IN_PROGRESS, message->state);
@@ -1625,7 +1652,7 @@ TEST_F(SenderTest, trySend_basic)
     Mock::VerifyAndClearExpectations(&mockDriver);
 
     // 1 packet to be sent; grant limit reached.
-    EXPECT_CALL(mockDriver, sendPacket(Eq(packet[2]), _, _));
+    EXPECT_CALL(mockDriver, sendPacket(EqPacket(&packet[2]), _, _));
     sender->trySend(&waitUntil);  // < test call
     EXPECT_FALSE(sender->sendReady);
     EXPECT_EQ(Homa::OutMessage::Status::IN_PROGRESS, message->state);
@@ -1652,8 +1679,8 @@ TEST_F(SenderTest, trySend_basic)
     // 2 more granted packets; will finish.
     info->packetsGranted = 5;
     sender->sendReady = true;
-    EXPECT_CALL(mockDriver, sendPacket(Eq(packet[3]), _, _));
-    EXPECT_CALL(mockDriver, sendPacket(Eq(packet[4]), _, _));
+    EXPECT_CALL(mockDriver, sendPacket(EqPacket(&packet[3]), _, _));
+    EXPECT_CALL(mockDriver, sendPacket(EqPacket(&packet[4]), _, _));
     sender->trySend(&waitUntil);  // < test call
     EXPECT_FALSE(sender->sendReady);
     EXPECT_EQ(Homa::OutMessage::Status::SENT, message->state);
@@ -1665,7 +1692,8 @@ TEST_F(SenderTest, trySend_basic)
     Mock::VerifyAndClearExpectations(&mockDriver);
 
     for (int i = 0; i < 5; ++i) {
-        delete packet[i];
+        uintptr_t packetBuf = packet[i].descriptor;
+        delete (Homa::Mock::MockDriver::PacketBuf*) packetBuf;
     }
 }
 
@@ -1673,17 +1701,18 @@ TEST_F(SenderTest, trySend_multipleMessages)
 {
     Sender::Message* message[3];
     Sender::QueuedMessageInfo* info[3];
-    Homa::Mock::MockDriver::MockPacket* packet[3];
+    Driver::Packet packet[3];
     for (uint64_t i = 0; i < 3; ++i) {
         Protocol::MessageId id = {22, 10 + i};
         message[i] = dynamic_cast<Sender::Message*>(sender->allocMessage(0));
         info[i] = &message[i]->queuedMessageInfo;
         SenderTest::addMessage(sender, id, message[i], true, 1);
-        packet[i] = new Homa::Mock::MockDriver::MockPacket {payload};
-        packet[i]->length = sender->driver->getMaxPayloadSize() / 4;
+        auto* packetBuf = new Homa::Mock::MockDriver::PacketBuf {payload};
+        packet[i] = packetBuf->toPacket();
+        packet[i].length = sender->driver->getMaxPayloadSize() / 4;
         setMessagePacket(message[i], 0, packet[i]);
         info[i]->unsentBytes +=
-            (packet[i]->length - message[i]->TRANSPORT_HEADER_LENGTH);
+            (packet[i].length - message[i]->TRANSPORT_HEADER_LENGTH);
         message[i]->state = Homa::OutMessage::Status::IN_PROGRESS;
     }
     sender->sendReady = true;
@@ -1695,16 +1724,16 @@ TEST_F(SenderTest, trySend_multipleMessages)
     // Message 1: Will reach grant limit
     EXPECT_EQ(1, info[1]->packetsGranted);
     info[1]->packetsSent = 0;
-    setMessagePacket(message[1], 1, nullptr);
+    setMessagePacket(message[1], 1, {});
     EXPECT_EQ(2, message[1]->numPackets);
 
     // Message 2: Will finish
     EXPECT_EQ(1, info[2]->packetsGranted);
     info[2]->packetsSent = 0;
 
-    EXPECT_CALL(mockDriver, sendPacket(Eq(packet[0]), _, _));
-    EXPECT_CALL(mockDriver, sendPacket(Eq(packet[1]), _, _));
-    EXPECT_CALL(mockDriver, sendPacket(Eq(packet[2]), _, _));
+    EXPECT_CALL(mockDriver, sendPacket(EqPacket(&packet[0]), _, _));
+    EXPECT_CALL(mockDriver, sendPacket(EqPacket(&packet[1]), _, _));
+    EXPECT_CALL(mockDriver, sendPacket(EqPacket(&packet[2]), _, _));
 
     uint64_t waitUntil;
     bool sendReady = sender->trySend(&waitUntil);

@@ -35,6 +35,12 @@ using ::testing::NiceMock;
 using ::testing::Return;
 using ::testing::SetArrayArgument;
 
+/**
+ * Defines a matcher EqPacket(p) to match two Driver::Packet* by their
+ * underlying packet buffer descriptors.
+ */
+MATCHER_P(EqPacket, p, "") { return arg->descriptor == p->descriptor; }
+
 class TransportImplTest : public ::testing::Test {
   public:
     TransportImplTest()
@@ -108,63 +114,71 @@ TEST_F(TransportImplTest, poll)
 TEST_F(TransportImplTest, processPackets)
 {
     char payload[8][1024];
-    Homa::Driver::Packet* packets[8];
+    Homa::Driver::Packet packets[8];
 
     // Set DATA packet
-    Homa::Mock::MockDriver::MockPacket dataPacket {payload[0], 1024};
+    Homa::Mock::MockDriver::PacketBuf dataPacketBuf {payload[0]};
+    Driver::Packet dataPacket = dataPacketBuf.toPacket(1024);
     static_cast<Protocol::Packet::DataHeader*>(dataPacket.payload)
         ->common.opcode = Protocol::Packet::DATA;
-    packets[0] = &dataPacket;
-    EXPECT_CALL(*mockReceiver, handleDataPacket(Eq(&dataPacket), _));
+    packets[0] = dataPacket;
+    EXPECT_CALL(*mockReceiver, handleDataPacket(EqPacket(&packets[0]), _));
 
     // Set GRANT packet
-    Homa::Mock::MockDriver::MockPacket grantPacket {payload[1], 1024};
+    Homa::Mock::MockDriver::PacketBuf grantPacketBuf {payload[1]};
+    Driver::Packet grantPacket = grantPacketBuf.toPacket(1024);
     static_cast<Protocol::Packet::GrantHeader*>(grantPacket.payload)
         ->common.opcode = Protocol::Packet::GRANT;
-    packets[1] = &grantPacket;
-    EXPECT_CALL(*mockSender, handleGrantPacket(Eq(&grantPacket)));
+    packets[1] = grantPacket;
+    EXPECT_CALL(*mockSender, handleGrantPacket(EqPacket(&packets[1])));
 
     // Set DONE packet
-    Homa::Mock::MockDriver::MockPacket donePacket {payload[2], 1024};
+    Homa::Mock::MockDriver::PacketBuf donePacketBuf {payload[2]};
+    Driver::Packet donePacket = donePacketBuf.toPacket(1024);
     static_cast<Protocol::Packet::DoneHeader*>(donePacket.payload)
         ->common.opcode = Protocol::Packet::DONE;
-    packets[2] = &donePacket;
-    EXPECT_CALL(*mockSender, handleDonePacket(Eq(&donePacket)));
+    packets[2] = donePacket;
+    EXPECT_CALL(*mockSender, handleDonePacket(EqPacket(&packets[2])));
 
     // Set RESEND packet
-    Homa::Mock::MockDriver::MockPacket resendPacket {payload[3], 1024};
+    Homa::Mock::MockDriver::PacketBuf resendPacketBuf {payload[3]};
+    Driver::Packet resendPacket = resendPacketBuf.toPacket(1024);
     static_cast<Protocol::Packet::ResendHeader*>(resendPacket.payload)
         ->common.opcode = Protocol::Packet::RESEND;
-    packets[3] = &resendPacket;
-    EXPECT_CALL(*mockSender, handleResendPacket(Eq(&resendPacket)));
+    packets[3] = resendPacket;
+    EXPECT_CALL(*mockSender, handleResendPacket(EqPacket(&packets[3])));
 
     // Set BUSY packet
-    Homa::Mock::MockDriver::MockPacket busyPacket {payload[4], 1024};
+    Homa::Mock::MockDriver::PacketBuf busyPacketBuf {payload[4]};
+    Driver::Packet busyPacket = busyPacketBuf.toPacket(1024);
     static_cast<Protocol::Packet::PingHeader*>(busyPacket.payload)
         ->common.opcode = Protocol::Packet::BUSY;
-    packets[4] = &busyPacket;
-    EXPECT_CALL(*mockReceiver, handleBusyPacket(Eq(&busyPacket)));
+    packets[4] = busyPacket;
+    EXPECT_CALL(*mockReceiver, handleBusyPacket(EqPacket(&packets[4])));
 
     // Set PING packet
-    Homa::Mock::MockDriver::MockPacket pingPacket {payload[5], 1024};
+    Homa::Mock::MockDriver::PacketBuf pingPacketBuf {payload[5]};
+    Driver::Packet pingPacket = pingPacketBuf.toPacket(1024);
     static_cast<Protocol::Packet::PingHeader*>(pingPacket.payload)
         ->common.opcode = Protocol::Packet::PING;
-    packets[5] = &pingPacket;
-    EXPECT_CALL(*mockReceiver, handlePingPacket(Eq(&pingPacket), _));
+    packets[5] = pingPacket;
+    EXPECT_CALL(*mockReceiver, handlePingPacket(EqPacket(&packets[5]), _));
 
     // Set UNKNOWN packet
-    Homa::Mock::MockDriver::MockPacket unknownPacket {payload[6], 1024};
+    Homa::Mock::MockDriver::PacketBuf unknownPacketBuf {payload[6]};
+    Driver::Packet unknownPacket = unknownPacketBuf.toPacket(1024);
     static_cast<Protocol::Packet::UnknownHeader*>(unknownPacket.payload)
         ->common.opcode = Protocol::Packet::UNKNOWN;
-    packets[6] = &unknownPacket;
-    EXPECT_CALL(*mockSender, handleUnknownPacket(Eq(&unknownPacket)));
+    packets[6] = unknownPacket;
+    EXPECT_CALL(*mockSender, handleUnknownPacket(EqPacket(&packets[6])));
 
     // Set ERROR packet
-    Homa::Mock::MockDriver::MockPacket errorPacket {payload[7], 1024};
+    Homa::Mock::MockDriver::PacketBuf errorPacketBuf {payload[7]};
+    Driver::Packet errorPacket = errorPacketBuf.toPacket(1024);
     static_cast<Protocol::Packet::ErrorHeader*>(errorPacket.payload)
         ->common.opcode = Protocol::Packet::ERROR;
-    packets[7] = &errorPacket;
-    EXPECT_CALL(*mockSender, handleErrorPacket(Eq(&errorPacket)));
+    packets[7] = errorPacket;
+    EXPECT_CALL(*mockSender, handleErrorPacket(EqPacket(&packets[7])));
 
     EXPECT_CALL(*mockDriver, receivePackets)
         .WillOnce(DoAll(SetArrayArgument<1>(packets, packets + 8), Return(8)));

@@ -171,7 +171,7 @@ class Sender {
         /// Define the maximum number of packets that a message can hold.
         static const size_t MAX_MESSAGE_PACKETS = 1024;
 
-        Driver::Packet* getPacket(size_t index) const;
+        Driver::Packet* getPacket(size_t index);
         Driver::Packet* getOrAllocPacket(size_t index);
 
         /// The Sender responsible for sending this message.
@@ -212,7 +212,7 @@ class Sender {
 
         /// Collection of Packet objects that make up this context's Message.
         /// These Packets will be released when this context is destroyed.
-        Driver::Packet* packets[MAX_MESSAGE_PACKETS];
+        Driver::Packet packets[MAX_MESSAGE_PACKETS];
 
         /// This message's current state.
         std::atomic<Status> state;

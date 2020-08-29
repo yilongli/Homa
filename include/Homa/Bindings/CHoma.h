@@ -21,6 +21,8 @@
 
 #pragma once
 
+#include "Homa/OutMessageStatus.h"
+
 #ifdef __cplusplus
 extern "C"
 {

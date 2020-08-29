@@ -62,12 +62,12 @@ void
 TransportPoller::processPackets()
 {
     const int MAX_BURST = 32;
-    Driver::Packet* packets[MAX_BURST];
+    Driver::Packet packets[MAX_BURST];
     IpAddress srcAddrs[MAX_BURST];
     Driver* driver = transport->getDriver();
     int numPackets = driver->receivePackets(MAX_BURST, packets, srcAddrs);
     for (int i = 0; i < numPackets; ++i) {
-        transport->processPacket(packets[i], srcAddrs[i]);
+        transport->processPacket(&packets[i], srcAddrs[i]);
     }
 }
 

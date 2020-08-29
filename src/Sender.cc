@@ -93,7 +93,7 @@ Sender::handleDonePacket(Driver::Packet* packet)
 
     if (message == nullptr) {
         // No message for this DONE packet; must be old. Just drop it.
-        driver->releasePackets(&packet, 1);
+        driver->releasePackets(packet, 1);
         return;
     }
 
@@ -142,7 +142,7 @@ Sender::handleDonePacket(Driver::Packet* packet)
             break;
     }
 
-    driver->releasePackets(&packet, 1);
+    driver->releasePackets(packet, 1);
 }
 
 /**
@@ -168,7 +168,7 @@ Sender::handleResendPacket(Driver::Packet* packet)
     if (message == nullptr) {
         // No message for this RESEND; RESEND must be old. Just ignore it; this
         // case should be pretty rare and the Receiver will timeout eventually.
-        driver->releasePackets(&packet, 1);
+        driver->releasePackets(packet, 1);
         return;
     } else if (message->numPackets < 2) {
         // We should never get a RESEND for a single packet message.  Just
@@ -177,7 +177,7 @@ Sender::handleResendPacket(Driver::Packet* packet)
             "Message (%lu, %lu) with only 1 packet received unexpected RESEND "
             "request; peer Transport may be confused.",
             msgId.transportId, msgId.sequence);
-        driver->releasePackets(&packet, 1);
+        driver->releasePackets(packet, 1);
         return;
     }
 
@@ -196,7 +196,7 @@ Sender::handleResendPacket(Driver::Packet* packet)
             "may be confused.",
             msgId.transportId, msgId.sequence, index, resendEnd,
             info->packets->numPackets);
-        driver->releasePackets(&packet, 1);
+        driver->releasePackets(packet, 1);
         return;
     }
 
@@ -229,7 +229,7 @@ Sender::handleResendPacket(Driver::Packet* packet)
         }
     }
 
-    driver->releasePackets(&packet, 1);
+    driver->releasePackets(packet, 1);
 }
 
 /**
@@ -250,7 +250,7 @@ Sender::handleGrantPacket(Driver::Packet* packet)
     Message* message = bucket->findMessage(msgId, lock);
     if (message == nullptr) {
         // No message for this grant; grant must be old. Just drop it.
-        driver->releasePackets(&packet, 1);
+        driver->releasePackets(packet, 1);
         return;
     }
 
@@ -290,7 +290,7 @@ Sender::handleGrantPacket(Driver::Packet* packet)
         }
     }
 
-    driver->releasePackets(&packet, 1);
+    driver->releasePackets(packet, 1);
 }
 
 /**
@@ -312,7 +312,7 @@ Sender::handleUnknownPacket(Driver::Packet* packet)
 
     if (message == nullptr) {
         // No message was found. Just drop the packet.
-        driver->releasePackets(&packet, 1);
+        driver->releasePackets(packet, 1);
         return;
     }
 
@@ -394,7 +394,7 @@ Sender::handleUnknownPacket(Driver::Packet* packet)
         // must be a stale response to a ping.
     }
 
-    driver->releasePackets(&packet, 1);
+    driver->releasePackets(packet, 1);
 }
 
 /**
@@ -415,7 +415,7 @@ Sender::handleErrorPacket(Driver::Packet* packet)
     Message* message = bucket->findMessage(msgId, lock);
     if (message == nullptr) {
         // No message for this ERROR packet; must be old. Just drop it.
-        driver->releasePackets(&packet, 1);
+        driver->releasePackets(packet, 1);
         return;
     }
 
@@ -463,7 +463,7 @@ Sender::handleErrorPacket(Driver::Packet* packet)
             break;
     }
 
-    driver->releasePackets(&packet, 1);
+    driver->releasePackets(packet, 1);
 }
 
 /**
@@ -683,10 +683,10 @@ Sender::Message::send(SocketAddress destination)
  *      Pointer to a Packet at the given index if it exists; nullptr otherwise.
  */
 Driver::Packet*
-Sender::Message::getPacket(size_t index) const
+Sender::Message::getPacket(size_t index)
 {
     if (occupied.test(index)) {
-        return packets[index];
+        return &packets[index];
     }
     return nullptr;
 }
@@ -710,9 +710,9 @@ Sender::Message::getOrAllocPacket(size_t index)
         numPackets++;
         // TODO(cstlee): A Message probably shouldn't be in charge of setting
         //               the packet length.
-        packets[index]->length = TRANSPORT_HEADER_LENGTH;
+        packets[index].length = TRANSPORT_HEADER_LENGTH;
     }
-    return packets[index];
+    return &packets[index];
 }
 
 /**

@@ -184,7 +184,7 @@ Receiver::handleDataPacket(Driver::Packet* packet, IpAddress sourceIp)
         }
     } else {
         // must be a duplicate packet; drop packet.
-        driver->releasePackets(&packet, 1);
+        driver->releasePackets(packet, 1);
     }
 }
 
@@ -212,7 +212,7 @@ Receiver::handleBusyPacket(Driver::Packet* packet)
             bucket->resendTimeouts.setTimeout(&message->resendTimeout);
         }
     }
-    driver->releasePackets(&packet, 1);
+    driver->releasePackets(packet, 1);
 }
 
 /**
@@ -264,7 +264,7 @@ Receiver::handlePingPacket(Driver::Packet* packet, IpAddress sourceIp)
         ControlPacket::send<Protocol::Packet::UnknownHeader>(
             driver, sourceIp, id);
     }
-    driver->releasePackets(&packet, 1);
+    driver->releasePackets(packet, 1);
 }
 
 /**
@@ -381,7 +381,7 @@ Receiver::Message::get(size_t offset, void* destination, size_t count) const
     while (bytesCopied < _count) {
         uint32_t bytesToCopy =
             std::min(_count - bytesCopied, PACKET_DATA_LENGTH - packetOffset);
-        Driver::Packet* packet = getPacket(packetIndex);
+        const Driver::Packet* packet = getPacket(packetIndex);
         if (packet != nullptr) {
             char* source = static_cast<char*>(packet->payload);
             source += packetOffset + TRANSPORT_HEADER_LENGTH;
@@ -444,11 +444,11 @@ Receiver::Message::release()
  * @return
  *      Pointer to a Packet at the given index if it exists; nullptr otherwise.
  */
-Driver::Packet*
+const Driver::Packet*
 Receiver::Message::getPacket(size_t index) const
 {
     if (occupied.test(index)) {
-        return packets[index];
+        return &packets[index];
     }
     return nullptr;
 }
@@ -464,7 +464,7 @@ Receiver::Message::getPacket(size_t index) const
  *      The Packet's index in the array of packets that form the message.
  *      "packet index = "packet message offset" / PACKET_DATA_LENGTH
  * @param packet
- *      The packet pointer that should be stored.
+ *      The packet that should be stored.
  * @return
  *      True if the packet was stored; false if a packet already exists (the new
  *      packet is not stored).
@@ -475,7 +475,7 @@ Receiver::Message::setPacket(size_t index, Driver::Packet* packet)
     if (occupied.test(index)) {
         return false;
     }
-    packets[index] = packet;
+    packets[index] = *packet;
     occupied.set(index);
     numPackets++;
     return true;

@@ -16,32 +16,6 @@
 #pragma once
 
 /**
- * Represents a packet of data that can be send or is received over the network.
- * A Packet logically contains only the transport-layer (L4) Homa header in
- * addition to application data.
- *
- * This struct specifies the minimal object layout of a packet that the core
- * Homa protocol depends on (e.g., Homa::Core::{Sender, Receiver}); this is
- * useful for applications that only want to use the transport layer of this
- * library and have their own infrastructures for sending and receiving packets.
- */
-#ifdef __cplusplus
-struct PacketSpec final {
-#else
-struct PacketSpec {
-#endif
-    /// Pointer to an array of bytes containing the payload of this Packet.
-    /// This array is valid until the Packet is released back to the Driver.
-    void* payload;
-
-    /// Number of bytes in the payload.
-    int32_t length;
-}  __attribute__((packed));
-#ifdef __cplusplus
-static_assert(std::is_trivial<PacketSpec>());
-#endif
-
-/**
  * Defines the possible states of an OutMessage.
  */
 #ifdef __cplusplus

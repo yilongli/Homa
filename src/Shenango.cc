@@ -41,7 +41,7 @@ DECLARE_SHENANGO_FUNC(void, rcu_read_unlock)
 /**
  * Allocate a Shenango mbuf struct to hold an egress Homa packet.
  */
-DECLARE_SHENANGO_FUNC(void*, homa_tx_alloc_mbuf)
+DECLARE_SHENANGO_FUNC(void*, homa_tx_alloc_mbuf, uintptr_t*, void**, int32_t*)
 
 /**
  * Free a packet buffer allocated earlier.
@@ -51,7 +51,7 @@ DECLARE_SHENANGO_FUNC(void, mbuf_free, void*)
 /**
  * Transmit an IP packet using Shenango's driver stack.
  */
-DECLARE_SHENANGO_FUNC(int, net_tx_ip, void*, uint8_t, uint32_t)
+DECLARE_SHENANGO_FUNC(int, homa_tx_ip, uintptr_t, void*, int32_t, uint8_t, uint32_t)
 
 /**
  * Deliver an ingress message to a homa socket in Shenango.
@@ -80,9 +80,12 @@ class ShenangoDriver final : public Driver {
         , link_speed(link_speed)
     {}
 
-    Packet* allocPacket() override
+    Packet allocPacket() override
     {
-        return static_cast<Packet*>(shenango_homa_tx_alloc_mbuf());
+        Packet packet;
+        shenango_homa_tx_alloc_mbuf(&packet.descriptor, &packet.payload,
+            &packet.length);
+        return packet;
     }
 
     void
@@ -91,14 +94,15 @@ class ShenangoDriver final : public Driver {
         // FIXME: modify shenango to allow setting packet priority
         (void)priority;
 
-        int ret = shenango_net_tx_ip(packet, proto, (uint32_t)destination);
+        int ret = shenango_homa_tx_ip(packet->descriptor, packet->payload,
+            packet->length, proto, (uint32_t)destination);
         if (ret != 0) {
-           shenango_mbuf_free(packet);
+            shenango_mbuf_free((void*) packet->descriptor);
         }
     }
 
     uint32_t
-    receivePackets(uint32_t maxPackets, Packet* receivedPackets[],
+    receivePackets(uint32_t maxPackets, Packet receivedPackets[],
                    IpAddress sourceAddresses[]) override
     {
         (void)maxPackets;
@@ -109,10 +113,10 @@ class ShenangoDriver final : public Driver {
     }
 
     void
-    releasePackets(Packet* packets[], uint16_t numPackets) override
+    releasePackets(Packet packets[], uint16_t numPackets) override
     {
         for (uint16_t i = 0; i < numPackets; i++) {
-            shenango_mbuf_free(packets[i]);
+            shenango_mbuf_free((void*) packets[i].descriptor);
         }
     }
 

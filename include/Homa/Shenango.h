@@ -29,7 +29,6 @@
 #pragma once
 
 #include "Bindings/CHoma.h"
-#include "BaseTypes.h"
 
 #ifdef __cplusplus
 extern "C"
