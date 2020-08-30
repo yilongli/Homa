@@ -819,14 +819,16 @@ Sender::cancelMessage(Sender::Message* message)
     if (bucket->messages.contains(&message->bucketNode)) {
         bucket->messageTimeouts.cancelTimeout(&message->messageTimeout);
         bucket->pingTimeouts.cancelTimeout(&message->pingTimeout);
-        if (message->numPackets > 1 &&
-            message->getStatus() == OutMessage::Status::IN_PROGRESS) {
-            // Check to see if the message needs to be dequeued.
+
+        // Check to see if the message needs to be dequeued. In order to reduce
+        // cache misses related to queueMutex, check the status first to avoid
+        // unnecessary locking.
+        OutMessage::Status status = message->getStatus();
+        if ((status == OutMessage::Status::IN_PROGRESS) ||
+            (status == OutMessage::Status::FAILED)) {
             SpinLock::Lock lock_queue(queueMutex);
-            // Recheck state with lock in case it change right before this.
-            if (message->getStatus() == OutMessage::Status::IN_PROGRESS) {
-                QueuedMessageInfo* info = &message->queuedMessageInfo;
-                assert(sendQueue.contains(&info->sendQueueNode));
+            QueuedMessageInfo* info = &message->queuedMessageInfo;
+            if (sendQueue.contains(&info->sendQueueNode)) {
                 sendQueue.remove(&info->sendQueueNode);
             }
         }

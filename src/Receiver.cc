@@ -123,10 +123,6 @@ Receiver::handleDataPacket(Driver::Packet* packet, IpAddress sourceIp)
             // Message needs to be scheduled.
             SpinLock::Lock lock_scheduler(schedulerMutex);
             schedule(message, lock_scheduler);
-            if (!needGrants && notifyNeedGrants) {
-                notifyNeedGrants();
-            }
-            needGrants = true;
         }
     }
 
@@ -152,11 +148,11 @@ Receiver::handleDataPacket(Driver::Packet* packet, IpAddress sourceIp)
                 assert(info->bytesRemaining >= packetDataBytes);
                 info->bytesRemaining -= packetDataBytes;
                 updateSchedule(message, lock_scheduler);
-                if (!needGrants && notifyNeedGrants) {
-                    notifyNeedGrants();
-                }
-                needGrants = true;
             }
+
+            // Non-duplicate DATA packets from scheduled messages can change
+            // the state of scheduledPeers; time to run trySendGrants() again
+            signalGrantorThread(lock_scheduler);
         }
 
         // Receiving a new packet means the message is still active so it
@@ -279,16 +275,13 @@ Receiver::handlePingPacket(Driver::Packet* packet, IpAddress sourceIp)
 uint64_t
 Receiver::checkTimeouts()
 {
-    uint64_t nextTimeout;
-
     // Ping Timeout
-    nextTimeout = checkResendTimeouts();
+    uint64_t resendTimeout = checkResendTimeouts();
 
     // Message Timeout
     uint64_t messageTimeout = checkMessageTimeouts();
-    nextTimeout = nextTimeout < messageTimeout ? nextTimeout : messageTimeout;
 
-    return nextTimeout;
+    return std::min(resendTimeout, messageTimeout);
 }
 
 /**
@@ -479,6 +472,24 @@ Receiver::Message::setPacket(size_t index, Driver::Packet* packet)
     occupied.set(index);
     numPackets++;
     return true;
+}
+
+/**
+ * Attempt to wake up the grantor thread that is responsible for calling
+ * trySendGrants() repeatedly, if it's currently blocked waiting for the
+ * states of the active messages in Receiver::scheduledPeers to change.
+ *
+ * @param lockHeld
+ *      Reminder to hold the Receiver::schedulerMutex during this call.
+ */
+void
+Receiver::signalGrantorThread(const SpinLock::Lock& lockHeld)
+{
+    (void)lockHeld;
+    if (!needGrants && notifyNeedGrants) {
+        notifyNeedGrants();
+    }
+    needGrants = true;
 }
 
 /**
@@ -867,6 +878,9 @@ Receiver::unschedule(Receiver::Message* message, const SpinLock::Lock& lock)
         Intrusive::deprioritize<Peer>(&scheduledPeers, &peer->scheduledPeerNode,
                                       comp);
     }
+
+    // scheduledPeers has been updated; time to run trySendGrants() again
+    signalGrantorThread(lock);
 }
 
 /**

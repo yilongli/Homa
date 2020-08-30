@@ -208,21 +208,22 @@ extern uint64_t homa_trans_id(homa_trans trans);
 /**
  * homa_trans_proc - C-binding for Homa::Transport::processPacket
  */
-extern void homa_trans_proc(homa_trans trans, void *pkt, uint32_t src_ip);
+extern void homa_trans_proc(homa_trans trans, uintptr_t desc, void* payload,
+                            int32_t len, uint32_t src_ip);
 
 /**
  * homa_trans_try_send - C-binding for
  * Homa::Transport::registerCallbackSendReady
  */
 extern void homa_trans_register_cb_send_ready(homa_trans trans,
-                                              void *(*cb) (void*), void *data);
+                                              void (*cb) (void*), void *data);
 
 /**
  * homa_trans_try_send - C-binding for
  * Homa::Transport::registerCallbackNeedGrants
  */
 extern void homa_trans_register_cb_need_grants(homa_trans trans,
-                                               void *(*cb) (void*), void *data);
+                                               void (*cb) (void*), void *data);
 
 /**
  * homa_trans_try_send - C-binding for Homa::Transport::trySend

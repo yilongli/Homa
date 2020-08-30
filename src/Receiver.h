@@ -448,6 +448,7 @@ class Receiver {
         Intrusive::List<Peer>::Node scheduledPeerNode;
     };
 
+    void signalGrantorThread(const SpinLock::Lock& lockHeld);
     void dropMessage(Receiver::Message* message);
     uint64_t checkMessageTimeouts();
     uint64_t checkResendTimeouts();

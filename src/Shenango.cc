@@ -41,7 +41,7 @@ DECLARE_SHENANGO_FUNC(void, rcu_read_unlock)
 /**
  * Allocate a Shenango mbuf struct to hold an egress Homa packet.
  */
-DECLARE_SHENANGO_FUNC(void*, homa_tx_alloc_mbuf, uintptr_t*, void**, int32_t*)
+DECLARE_SHENANGO_FUNC(void*, homa_tx_alloc_mbuf, void**)
 
 /**
  * Free a packet buffer allocated earlier.
@@ -51,13 +51,19 @@ DECLARE_SHENANGO_FUNC(void, mbuf_free, void*)
 /**
  * Transmit an IP packet using Shenango's driver stack.
  */
-DECLARE_SHENANGO_FUNC(int, homa_tx_ip, uintptr_t, void*, int32_t, uint8_t, uint32_t)
+DECLARE_SHENANGO_FUNC(int, homa_tx_ip,
+        uintptr_t, void*, int32_t, uint8_t, uint32_t, uint8_t)
 
 /**
  * Deliver an ingress message to a homa socket in Shenango.
  */
 DECLARE_SHENANGO_FUNC(void, homa_mb_deliver,
         void*, homa_inmsg, uint32_t, uint16_t)
+
+/**
+ * Return the number of bytes queued up in the transmit queue.
+ */
+DECLARE_SHENANGO_FUNC(uint32_t, homa_queued_bytes)
 
 /**
  * Find a socket that matches the 5-tuple.
@@ -82,23 +88,16 @@ class ShenangoDriver final : public Driver {
 
     Packet allocPacket() override
     {
-        Packet packet;
-        shenango_homa_tx_alloc_mbuf(&packet.descriptor, &packet.payload,
-            &packet.length);
-        return packet;
+        void* payload;
+        void* mbuf = shenango_homa_tx_alloc_mbuf(&payload);
+        return Packet{(uintptr_t) mbuf, payload, 0};
     }
 
     void
     sendPacket(Packet* packet, IpAddress destination, int priority) override
     {
-        // FIXME: modify shenango to allow setting packet priority
-        (void)priority;
-
-        int ret = shenango_homa_tx_ip(packet->descriptor, packet->payload,
-            packet->length, proto, (uint32_t)destination);
-        if (ret != 0) {
-            shenango_mbuf_free((void*) packet->descriptor);
-        }
+        shenango_homa_tx_ip(packet->descriptor, packet->payload, packet->length,
+                proto, (uint32_t)destination, (uint8_t)priority);
     }
 
     uint32_t
@@ -126,11 +125,7 @@ class ShenangoDriver final : public Driver {
 
     IpAddress getLocalAddress() override { return local_ip; }
 
-    uint32_t getQueuedBytes() override
-    {
-        // FIXME!
-        return 0;
-    }
+    uint32_t getQueuedBytes() override { return shenango_homa_queued_bytes(); }
 
   private:
     /// Protocol number reserved for Homa; defined as IPPROTO_HOMA in Shenango.

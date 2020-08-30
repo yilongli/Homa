@@ -171,20 +171,25 @@ uint64_t homa_trans_id(homa_trans trans)
     return deref(Transport, trans).getId();
 }
 
-void homa_trans_proc(homa_trans trans, void* pkt, uint32_t src_ip)
+void homa_trans_proc(homa_trans trans, uintptr_t desc, void* payload,
+                     int32_t len, uint32_t src_ip)
 {
-    deref(Transport, trans).processPacket(static_cast<Driver::Packet*>(pkt),
-        IpAddress{src_ip});
+    Driver::Packet packet = {
+        .descriptor = desc,
+        .payload = payload,
+        .length = len
+    };
+    deref(Transport, trans).processPacket(&packet, IpAddress{src_ip});
 }
 
-void homa_trans_register_cb_send_ready(homa_trans trans, void *(*cb) (void*),
+void homa_trans_register_cb_send_ready(homa_trans trans, void (*cb) (void*),
                                        void *data)
 {
     std::function<void()> func = std::bind(cb, data);
     deref(Transport, trans).registerCallbackSendReady(func);
 }
 
-void homa_trans_register_cb_need_grants(homa_trans trans, void *(*cb) (void*),
+void homa_trans_register_cb_need_grants(homa_trans trans, void (*cb) (void*),
                                         void *data)
 {
     std::function<void()> func = std::bind(cb, data);
