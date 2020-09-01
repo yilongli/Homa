@@ -256,13 +256,20 @@ class OutMessage {
  * they are consumed by high-level applications.
  *
  * Despite a one-to-one relationship between Mailbox and Socket, this class
- * is pulled out of Socket to 1) provide a clean interface which allows users
- * to define their own mechanisms for message delivery (e.g., poll vs. push),
- * and 2) enable different lifetimes of a socket and its mailbox.
+ * is decoupled from Socket for three reasons:
+ * <ul>
+ * <li> Abstract out the interaction with the user's thread scheduler: e.g.,
+ * a user system may want to block on receive until a message is delivered;
+ * <li> Abstract out the mechanism for high-performance message dispatch: e.g.,
+ * a user system may choose to implement the message receive queue with a
+ * concurrent MPMC queue as opposed to a linked-list protected by a mutex;
+ * <li> Abstract out the mechanism for safe memory reclamation of the receive
+ * queue: e.g., RCU is a well-known solution, reference counting is another.
+ * </ul>
  *
- * In other words, methods in this class are NOT meant to be called by user
- * applications directly; instead, they are called by the Homa transport library
- * with user-defined implementations.
+ * Note: methods in this class are NOT meant to be called by user applications
+ * directly; instead, they are defined by user applications and called by the
+ * Homa transport library.
  *
  * This class is thread-safe.
  *
@@ -323,9 +330,10 @@ class Mailbox {
  * Provides a means to keep track of the mailboxes that are currently in use
  * by Homa sockets.
  *
- * This class is separated out from Transport to allow users to apply their
- * own mechanisms (e.g., RCU) to provide synchronization and manage mailbox
- * lifetimes.
+ * This class is separated out from Transport to allow users to 1) use their
+ * own data structures to store the map from port numbers to mailboxes, and
+ * 2) apply their own mechanisms to perform synchronization (e.g., hash map
+ * with fine-grained locks, RCU to delay mailbox destruction, etc).
  *
  * Similar to Mailbox, methods in this class are NOT meant to be called by
  * user applications.
@@ -550,21 +558,6 @@ class Transport {
      *      The function object to invoke.
      */
     virtual void registerCallbackSendReady(Callback func) = 0;
-
-    /**
-     * Register a callback function to be invoked when some incoming messages
-     * just became ready for more grants (and there was none before).
-     *
-     * This callback allows the transport library to notify the users that
-     * trySendGrants() should be invoked again as soon as possible. For example,
-     * the callback can be used to implement wakeup signals for the thread
-     * that is responsible for calling trySendGrants(), if this thread decides
-     * to sleep when there is messages waiting for grants.
-     *
-     * @param func
-     *      The function object to invoke.
-     */
-    virtual void registerCallbackNeedGrants(Callback func) = 0;
 
     /**
      * Attempt to send out packets for any messages with unscheduled/granted

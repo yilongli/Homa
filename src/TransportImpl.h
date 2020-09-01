@@ -48,7 +48,6 @@ class TransportImpl final : public Transport {
     uint64_t checkTimeouts() override;
     void processPacket(Driver::Packet* packet, IpAddress source) override;
     void registerCallbackSendReady(Callback func) override;
-    void registerCallbackNeedGrants(Callback func) override;
     bool trySend(uint64_t* waitUntil) override;
     bool trySendGrants() override;
 

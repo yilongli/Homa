@@ -219,13 +219,6 @@ extern void homa_trans_register_cb_send_ready(homa_trans trans,
                                               void (*cb) (void*), void *data);
 
 /**
- * homa_trans_try_send - C-binding for
- * Homa::Transport::registerCallbackNeedGrants
- */
-extern void homa_trans_register_cb_need_grants(homa_trans trans,
-                                               void (*cb) (void*), void *data);
-
-/**
  * homa_trans_try_send - C-binding for Homa::Transport::trySend
  */
 extern bool homa_trans_try_send(homa_trans trans, uint64_t *wait_until);

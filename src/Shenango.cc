@@ -57,8 +57,7 @@ DECLARE_SHENANGO_FUNC(int, homa_tx_ip,
 /**
  * Deliver an ingress message to a homa socket in Shenango.
  */
-DECLARE_SHENANGO_FUNC(void, homa_mb_deliver,
-        void*, homa_inmsg, uint32_t, uint16_t)
+DECLARE_SHENANGO_FUNC(void, homa_mb_deliver, void*, homa_inmsg)
 
 /**
  * Return the number of bytes queued up in the transmit queue.
@@ -176,9 +175,7 @@ class ShenangoMailbox final : public Mailbox {
 
     void deliver(InMessage* message) override
     {
-        SocketAddress src = message->getSourceAddress();
-        shenango_homa_mb_deliver(trans_entry, homa_inmsg{message},
-                (uint32_t)src.ip, src.port);
+        shenango_homa_mb_deliver(trans_entry, homa_inmsg{message});
     }
 
     InMessage* retrieve(bool blocking) override

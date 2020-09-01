@@ -53,7 +53,6 @@ class Receiver {
     virtual void handleBusyPacket(Driver::Packet* packet);
     virtual void handlePingPacket(Driver::Packet* packet, IpAddress sourceIp);
     virtual uint64_t checkTimeouts();
-    virtual void registerCallbackNeedGrants(Callback func);
     virtual bool trySendGrants();
 
   private:
@@ -448,7 +447,7 @@ class Receiver {
         Intrusive::List<Peer>::Node scheduledPeerNode;
     };
 
-    void signalGrantorThread(const SpinLock::Lock& lockHeld);
+    void signalNeedGrants(const SpinLock::Lock& lockHeld);
     void dropMessage(Receiver::Message* message);
     uint64_t checkMessageTimeouts();
     uint64_t checkResendTimeouts();
@@ -482,18 +481,9 @@ class Receiver {
     Intrusive::List<Peer> scheduledPeers;
 
     /// Hint whether there MIGHT be messages that need to be granted. Encoded
-    /// into a single bool so that checking if there is work to do is more
-    /// efficient. Access is protected by the schedulerMutex.
-    bool needGrants;
-
-    /// Callback function to be invoked when _needGrants_ flips from false to
-    /// true.
-    Callback notifyNeedGrants;
-
-    /// True if the Receiver is executing trySendGrants(); false, otherwise.
-    /// Used to prevent concurrent calls to trySendGrants() from blocking on
-    /// each other.
-    std::atomic_flag granting = ATOMIC_FLAG_INIT;
+    /// into an atomic bool so that checking if there is work to do can be done
+    /// efficiently without acquiring the schedulerMutex first.
+    std::atomic_flag dontNeedGrants;
 
     /// Used to allocate Message objects.
     struct {

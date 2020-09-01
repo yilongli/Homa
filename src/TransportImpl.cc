@@ -150,13 +150,6 @@ TransportImpl::registerCallbackSendReady(Callback func)
     sender->registerCallbackSendReady(func);
 }
 
-/// See Homa::Transport::registerCallbackNeedGrants()
-void
-TransportImpl::registerCallbackNeedGrants(Callback func)
-{
-    receiver->registerCallbackNeedGrants(func);
-}
-
 /// See Homa::Transport::trySend()
 bool
 TransportImpl::trySend(uint64_t* waitUntil)

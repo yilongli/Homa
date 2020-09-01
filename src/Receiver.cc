@@ -48,9 +48,7 @@ Receiver::Receiver(Driver* driver, MailboxDir* mailboxDir,
     , messageBuckets(messageTimeoutCycles, resendIntervalCycles)
     , schedulerMutex()
     , scheduledPeers()
-    , needGrants()
-    , notifyNeedGrants()
-    , granting()
+    , dontNeedGrants()
     , messageAllocator()
 {}
 
@@ -152,7 +150,7 @@ Receiver::handleDataPacket(Driver::Packet* packet, IpAddress sourceIp)
 
             // Non-duplicate DATA packets from scheduled messages can change
             // the state of scheduledPeers; time to run trySendGrants() again
-            signalGrantorThread(lock_scheduler);
+            signalNeedGrants(lock_scheduler);
         }
 
         // Receiving a new packet means the message is still active so it
@@ -475,21 +473,22 @@ Receiver::Message::setPacket(size_t index, Driver::Packet* packet)
 }
 
 /**
- * Attempt to wake up the grantor thread that is responsible for calling
- * trySendGrants() repeatedly, if it's currently blocked waiting for the
- * states of the active messages in Receiver::scheduledPeers to change.
+ * Clear the atomic _dontNeedGrants_ flag to indicate that trySendGrants()
+ * needs to run again. This method is called when the state of active messages
+ * in Receiver::scheduledPeers might have changed.
+ *
+ * Note: we require the caller to hold the schedulerMutex during this call
+ * because it becomes much easier to reason about the interaction between
+ * the atomic flag and the mutex this way (and it's essentially free).
  *
  * @param lockHeld
  *      Reminder to hold the Receiver::schedulerMutex during this call.
  */
 void
-Receiver::signalGrantorThread(const SpinLock::Lock& lockHeld)
+Receiver::signalNeedGrants(const SpinLock::Lock& lockHeld)
 {
     (void)lockHeld;
-    if (!needGrants && notifyNeedGrants) {
-        notifyNeedGrants();
-    }
-    needGrants = true;
+    dontNeedGrants.clear(std::memory_order_release);
 }
 
 /**
@@ -704,13 +703,6 @@ Receiver::checkResendTimeouts()
     return globalNextTimeout;
 }
 
-/// See Homa::Transport::registerCallbackNeedGrants()
-void
-Receiver::registerCallbackNeedGrants(Callback func)
-{
-    notifyNeedGrants = std::move(func);
-}
-
 /**
  * Send GRANTs to incoming Message according to the Receiver's policy.
  *
@@ -723,17 +715,18 @@ Receiver::registerCallbackNeedGrants(Callback func)
 bool
 Receiver::trySendGrants()
 {
-    // Skip scheduling if another poller is already working on it.
-    if (granting.test_and_set()) {
-        return true;
-    }
-
-    SpinLock::Lock lock(schedulerMutex);
-    if (!needGrants) {
-        granting.clear();
+    // Fast path: skip if no message is waiting for grants
+    bool needGrants = !dontNeedGrants.test_and_set();
+    if (needGrants) {
         return false;
     }
-    needGrants = false;
+
+    /* It's possible to have a benign race-condition here when another thread
+     * acquires the schedulerMutex before us and sets _dontNeedGrants_ back to
+     * false via signalNeedGrants. As a result, _dontNeedGrants_ will stay false
+     * when the method returns although all messages have been granted.
+     */
+    SpinLock::Lock lock(schedulerMutex);
 
     /* The overall goal is to grant up to policy.degreeOvercommitment number of
      * scheduled messages simultaneously.  Each of these messages should always
@@ -794,7 +787,6 @@ Receiver::trySendGrants()
         ++slot;
     }
 
-    granting.clear();
     return foundWork;
 }
 
@@ -880,7 +872,7 @@ Receiver::unschedule(Receiver::Message* message, const SpinLock::Lock& lock)
     }
 
     // scheduledPeers has been updated; time to run trySendGrants() again
-    signalGrantorThread(lock);
+    signalNeedGrants(lock);
 }
 
 /**

@@ -189,13 +189,6 @@ void homa_trans_register_cb_send_ready(homa_trans trans, void (*cb) (void*),
     deref(Transport, trans).registerCallbackSendReady(func);
 }
 
-void homa_trans_register_cb_need_grants(homa_trans trans, void (*cb) (void*),
-                                        void *data)
-{
-    std::function<void()> func = std::bind(cb, data);
-    deref(Transport, trans).registerCallbackNeedGrants(func);
-}
-
 bool homa_trans_try_send(homa_trans trans, uint64_t *wait_until)
 {
     return deref(Transport, trans).trySend(wait_until);
