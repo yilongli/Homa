@@ -91,8 +91,10 @@ TransportImpl::processPackets()
     IpAddress srcAddrs[MAX_BURST];
     int numPackets = driver->receivePackets(MAX_BURST, packets, srcAddrs);
     int releaseCount = 0;
+
+    uint64_t now = PerfUtils::Cycles::rdtsc();
     for (int i = 0; i < numPackets; ++i) {
-        bool retainPacket = processPacket(packets[i], srcAddrs[i]);
+        bool retainPacket = processPacket(packets[i], srcAddrs[i], now);
         if (!retainPacket) {
             packets[releaseCount++] = packets[i];
         }
@@ -111,13 +113,16 @@ TransportImpl::processPackets()
  *      Incoming packet to be processed.
  * @param sourceIp
  *      Source IP address.
+ * @param now
+ *      The rdtsc cycle that should be considered the "current" time.
  * @return
  *      True if the transport decides to take ownership of the packet. False
  *      if the transport has no more use of this packet and it can be released
  *      to the driver.
  */
 bool
-TransportImpl::processPacket(Driver::Packet* packet, IpAddress sourceIp)
+TransportImpl::processPacket(Driver::Packet* packet, IpAddress sourceIp,
+                             uint64_t now)
 {
     assert(packet->length >=
            Util::downCast<int>(sizeof(Protocol::Packet::CommonHeader)));
@@ -128,11 +133,11 @@ TransportImpl::processPacket(Driver::Packet* packet, IpAddress sourceIp)
     switch (header->opcode) {
         case Protocol::Packet::DATA:
             Perf::counters.rx_data_pkts.add(1);
-            retainPacket = receiver->handleDataPacket(packet, sourceIp);
+            retainPacket = receiver->handleDataPacket(packet, now, sourceIp);
             break;
         case Protocol::Packet::GRANT:
             Perf::counters.rx_grant_pkts.add(1);
-            sender->handleGrantPacket(packet);
+            sender->handleGrantPacket(packet, now);
             break;
         case Protocol::Packet::DONE:
             // fixme: rename DONE to ACK?
@@ -141,15 +146,15 @@ TransportImpl::processPacket(Driver::Packet* packet, IpAddress sourceIp)
             break;
         case Protocol::Packet::RESEND:
             Perf::counters.rx_resend_pkts.add(1);
-            sender->handleResendPacket(packet);
+            sender->handleResendPacket(packet, now);
             break;
         case Protocol::Packet::BUSY:
             Perf::counters.rx_busy_pkts.add(1);
-            receiver->handleBusyPacket(packet);
+            receiver->handleBusyPacket(packet, now);
             break;
         case Protocol::Packet::PING:
             Perf::counters.rx_ping_pkts.add(1);
-            receiver->handlePingPacket(packet, sourceIp);
+            receiver->handlePingPacket(packet, now, sourceIp);
             break;
         case Protocol::Packet::UNKNOWN:
             Perf::counters.rx_unknown_pkts.add(1);

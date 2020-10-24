@@ -49,20 +49,20 @@ class Sender {
 
     virtual Homa::OutMessage* allocMessage(uint16_t sourcePort);
     virtual void handleDonePacket(Driver::Packet* packet);
-    virtual void handleResendPacket(Driver::Packet* packet);
-    virtual void handleGrantPacket(Driver::Packet* packet);
+    virtual void handleResendPacket(Driver::Packet* packet, uint64_t now);
+    virtual void handleGrantPacket(Driver::Packet* packet, uint64_t now);
     virtual void handleUnknownPacket(Driver::Packet* packet);
     virtual void handleErrorPacket(Driver::Packet* packet);
 
     virtual void poll();
-    virtual void checkTimeouts();
+    virtual uint64_t checkTimeouts();
 
   private:
     /// Forward declarations
     class Message;
     struct MessageBucket;
 
-    Message* handleIncomingPacket(Driver::Packet* packet, bool resetTimeout);
+    Message* handleIncomingPacket(Driver::Packet* packet);
 
     /**
      * Contains metadata for a Message that has been queued to be sent.
@@ -110,7 +110,6 @@ class Sender {
      */
     class Message : public Homa::OutMessage {
       public:
-
         /**
          * Implements a binary comparison function for the strict weak priority
          * ordering of two Message objects.
@@ -146,7 +145,8 @@ class Sender {
             // construction. See Message::occupied.
             , state(Status::NOT_STARTED)
             , bucketNode(this)
-            , numPingTimeouts(0)
+            , lastAliveTime(0)
+            , needTimeouts()
             , pingTimeout(this)
             , queuedMessageInfo(this)
         {}
@@ -236,14 +236,20 @@ class Sender {
         /// is protected by the associated MessageBucket::mutex;
         Intrusive::List<Message>::Node bucketNode;
 
-        /// Number of ping timeouts that occurred in a row.  Access to this
-        /// structure is protected by the associated MessageBucket::mutex.
-        int numPingTimeouts;
+        /// Last time, in rdtsc cycles, we heard from the receiver that this
+        /// message is still alive.  No need to set if _needTimeouts_ is false.
+        std::atomic<uint64_t> lastAliveTime;
+
+        /// True if this message needs to be tracked by the timeout manager
+        /// (i.e., this message will be linked into Sender::pingTimeouts).
+        /// Must be constant after send() is invoked.
+        bool needTimeouts;
 
         /// Intrusive structure used by the Sender to keep track when this
         /// message should be checked to ensure progress is still being made.
-        /// Access to this structure is protected by the associated
-        /// MessageBucket::mutex;
+        /// Access to this structure is protected by the Sender::timeoutMutex.
+        /// Note: rescheduling a timeout is an expensive operation because of
+        /// the global mutex; so it's only done inside Sender::checkTimeouts().
         Timeout<Message> pingTimeout;
 
         /// Intrusive structure used by the Sender to keep track of this Message
@@ -266,15 +272,11 @@ class Sender {
          *
          * @param Sender
          *      Sender that owns this bucket.
-         * @param pingIntervalCycles
-         *      Number of cycles of inactivity to wait between checking on the
-         *      liveness of a Message.
          */
-        explicit MessageBucket(Sender* sender, uint64_t pingIntervalCycles)
+        explicit MessageBucket(Sender* sender)
             : sender(sender)
             , mutex()
             , messages()
-            , pingTimeouts(pingIntervalCycles)
         {}
 
         /**
@@ -320,9 +322,6 @@ class Sender {
 
         /// Collection of outbound messages
         Intrusive::List<Message> messages;
-
-        /// Maintains Message objects in increasing order of ping timeout.
-        TimeoutManager<Message> pingTimeouts;
     };
 
     /**
@@ -352,17 +351,14 @@ class Sender {
          *
          * @param sender
          *      Sender that owns this bucket map.
-         * @param pingIntervalCycles
-         *      Number of cycles of inactivity to wait between checking on the
-         *      liveness of a Message.
          */
-        explicit MessageBucketMap(Sender* sender, uint64_t pingIntervalCycles)
+        explicit MessageBucketMap(Sender* sender)
             : buckets()
             , hasher()
         {
             buckets.reserve(NUM_BUCKETS);
             for (int i = 0; i < NUM_BUCKETS; ++i) {
-                buckets.emplace_back(sender, pingIntervalCycles);
+                buckets.emplace_back(sender);
             }
         }
 
@@ -390,7 +386,6 @@ class Sender {
     };
 
     void startMessage(Sender::Message* message, bool restart);
-    void checkPingTimeouts(uint64_t now, MessageBucket* bucket);
     void trySend();
 
     /// Transport identifier.
@@ -415,8 +410,8 @@ class Sender {
     /// Tracks all outbound messages being sent by the Sender.
     MessageBucketMap messageBuckets;
 
-    /// Protects the sendQueue.  Locking principle: when a bucket mutex is also
-    /// required, it must be acquired before the sendQueue mutex.
+    /// Protects the sendQueue.  Locking principle: when a timeout mutex is also
+    /// required, it must be acquired before this sendQueue mutex.
     SpinLock queueMutex;
 
     /// A list of outbound messages that have unsent packets.  Messages are kept
@@ -432,14 +427,14 @@ class Sender {
     /// if there is work to do is more efficient.
     std::atomic<bool> sendReady;
 
-    /// The index of the next bucket in the messageBuckets::buckets array to
-    /// process in the poll loop. The index is held in the lower order bits of
-    /// this variable; the higher order bits should be masked off using the
-    /// MessageBucketMap::HASH_KEY_MASK bit mask.
-    std::atomic<uint> nextBucketIndex;
-
     /// Used to allocate Message objects.
     ObjectPool<Message> messageAllocator;
+
+    /// Protects the timeout manager.
+    SpinLock timeoutMutex;
+
+    /// Maintains Message objects in increasing order of ping timeout.
+    TimeoutManager<Message> pingTimeouts;
 };
 
 }  // namespace Core

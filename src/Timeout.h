@@ -50,6 +50,15 @@ class Timeout {
     {}
 
     /**
+     * Return the time when this timeout will expire, in rdtsc cycles.
+     */
+    inline uint64_t getExpirationTime()
+    {
+        return expirationCycleTime;
+    }
+
+    // FIXME: remove the following method? the getter is strictly more flexible
+    /**
      * Return true if this Timeout has elapsed; false otherwise.
      *
      * @param now
@@ -93,6 +102,17 @@ class TimeoutManager {
         , nextTimeout(UINT64_MAX)
         , list()
     {}
+
+    /**
+     * Return the timeout interval supported by this manager.
+     *
+     * @return
+     *      Timeout interval in rdtsc cycles.
+     */
+    inline uint64_t getTimeoutInterval()
+    {
+        return timeoutIntervalCycles;
+    }
 
     /**
      * Schedule the Timeout to elapse one timeout interval from this point.  If
@@ -185,7 +205,7 @@ class TimeoutManager {
   private:
     /// The number of cycles this newly scheduled timeouts would wait before
     /// they elapse.
-    uint64_t timeoutIntervalCycles;
+    const uint64_t timeoutIntervalCycles;
 
     /// The smallest timeout expiration time of all timeouts under
     /// management. Accessing this value is thread-safe.

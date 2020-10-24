@@ -48,12 +48,14 @@ class Receiver {
                       uint64_t messageTimeoutCycles,
                       uint64_t resendIntervalCycles);
     virtual ~Receiver();
-    virtual bool handleDataPacket(Driver::Packet* packet, IpAddress sourceIp);
-    virtual void handleBusyPacket(Driver::Packet* packet);
-    virtual void handlePingPacket(Driver::Packet* packet, IpAddress sourceIp);
+    virtual bool handleDataPacket(Driver::Packet* packet, uint64_t now,
+                                  IpAddress sourceIp);
+    virtual void handleBusyPacket(Driver::Packet* packet, uint64_t now);
+    virtual void handlePingPacket(Driver::Packet* packet, uint64_t now,
+                                  IpAddress sourceIp);
     virtual Homa::InMessage* receiveMessage();
     virtual void poll();
-    virtual void checkTimeouts();
+    virtual uint64_t checkTimeouts();
 
   private:
     // Forward declaration
@@ -61,7 +63,8 @@ class Receiver {
     struct MessageBucket;
     struct Peer;
 
-    Message* handleIncomingPacket(Driver::Packet* packet, bool createIfAbsent,
+    Message* handleIncomingPacket(Driver::Packet* packet, uint64_t now,
+                                  bool createIfAbsent,
                                   IpAddress* sourceIp = nullptr);
 
     /**
@@ -158,7 +161,8 @@ class Receiver {
             , state(Message::State::IN_PROGRESS)
             , bucketNode(this)
             , receivedMessageNode(this)
-            , numResendTimeouts(0)
+            , lastAliveTime()
+            , needTimeouts(numExpectedPackets > 1)
             , resendTimeout(this)
             , scheduledMessageInfo(this, messageLength)
         {}
@@ -166,7 +170,7 @@ class Receiver {
         virtual ~Message();
         void acknowledge() const override;
         size_t get(size_t offset, void* destination,
-                           size_t count) const override;
+                   size_t count) const override;
         size_t length() const override;
         void strip(size_t count) override;
         void release() override;
@@ -245,12 +249,20 @@ class Receiver {
         /// message when it has been completely received.
         Intrusive::List<Message>::Node receivedMessageNode;
 
-        /// Number of resend timeouts that occurred in a row.  Access to this
-        /// structure is protected by the associated MessageBucket::mutex.
-        int numResendTimeouts;
+        /// Last time, in rdtsc cycles, we heard from the sender that this
+        /// message is still alive.  No need to set if _needTimeouts_ is false.
+        std::atomic<uint64_t> lastAliveTime;
+
+        /// True if this message needs to be tracked by the timeout manager
+        /// (i.e., this message will be linked into Receiver::resendTimeouts).
+        /// Currently, this is set to true for all single-packet messages.
+        const bool needTimeouts;
 
         /// Intrusive structure used by the Receiver to keep track when
         /// unreceived parts of this message should be re-requested.
+        /// Access to this structure is protected by Receiver::timeoutMutex.
+        /// Note: rescheduling a timeout is an expensive operation because of
+        /// the global mutex; so it's only done inside Sender::checkTimeouts().
         Timeout<Message> resendTimeout;
 
         /// Intrusive structure used by the Receiver to keep track of this
@@ -273,17 +285,11 @@ class Receiver {
          *
          * @param receiver
          *      Receiver that owns this bucket.
-         * @param resendIntervalCycles
-         *      Number of cycles of inactivity to wait between requesting
-         *      retransmission of un-received parts of a Message.
-         *      liveness of a Message.
          */
-        explicit MessageBucket(Receiver* receiver,
-                               uint64_t resendIntervalCycles)
+        explicit MessageBucket(Receiver* receiver)
             : receiver(receiver)
             , mutex()
             , messages()
-            , resendTimeouts(resendIntervalCycles)
         {}
 
         /**
@@ -329,9 +335,6 @@ class Receiver {
 
         /// Collection of inbound messages
         Intrusive::List<Message> messages;
-
-        /// Maintains Message object in increasing order of resend timeout.
-        TimeoutManager<Message> resendTimeouts;
     };
 
     /**
@@ -358,19 +361,14 @@ class Receiver {
 
         /**
          * MessageBucketMap constructor.
-         *
-         * @param resendIntervalCycles
-         *      Number of cycles of inactivity to wait between requesting
-         *      retransmission of un-received parts of a Message.
-         *      liveness of a Message.
          */
-        explicit MessageBucketMap(uint64_t resendIntervalCycles)
+        explicit MessageBucketMap()
             : buckets()
             , hasher()
         {
             buckets.reserve(NUM_BUCKETS);
             for (int i = 0; i < NUM_BUCKETS; ++i) {
-                buckets.emplace_back(resendIntervalCycles);
+                buckets.emplace_back();
             }
         }
 
@@ -470,6 +468,8 @@ class Receiver {
 
     /// Protects access to the Receiver's scheduler state (i.e. peerTable,
     /// scheduledPeers, and ScheduledMessageInfo).
+    /// Locking principle: when a timeout mutex is also required, it must be
+    /// acquired before this scheduler mutex.
     SpinLock schedulerMutex;
 
     /// Collection of all peers; used for fast access.  Access is protected by
@@ -493,14 +493,14 @@ class Receiver {
     /// each other.
     std::atomic_flag granting = ATOMIC_FLAG_INIT;
 
-    /// The index of the next bucket in the messageBuckets::buckets array to
-    /// process in the poll loop. The index is held in the lower order bits of
-    /// this variable; the higher order bits should be masked off using the
-    /// MessageBucketMap::HASH_KEY_MASK bit mask.
-    std::atomic<uint> nextBucketIndex;
-
     /// Used to allocate Message objects.
     ObjectPool<Message> messageAllocator;
+
+    /// Protects the timeout manager.
+    SpinLock timeoutMutex;
+
+    /// Maintains Message object in increasing order of resend timeout.
+    TimeoutManager<Message> resendTimeouts;
 };
 
 }  // namespace Core
