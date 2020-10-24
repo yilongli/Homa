@@ -664,11 +664,17 @@ Receiver::trySendGrants()
         return;
     }
 
-    SpinLock::Lock lock(schedulerMutex);
+    Tub<SpinLock::Lock> sched_lock;
+    sched_lock.construct(schedulerMutex);
     if (scheduledPeers.empty()) {
         granting.clear();
         return;
     }
+
+    // Used to hold GRANT packets that will be sent out in this method.
+    using Grant = std::tuple<IpAddress, Protocol::MessageId, uint32_t, int>;
+    std::array<Grant, 16> grantPackets;
+    int numGrants = 0;
 
     /* The overall goal is to grant up to policy.degreeOvercommitment number of
      * scheduled messages simultaneously.  Each of these messages should always
@@ -710,11 +716,11 @@ Receiver::trySendGrants()
                 receivedBytes + policy.maxScheduledBytes, info->messageLength);
             assert(newGrantLimit >= info->bytesGranted);
             info->bytesGranted = newGrantLimit;
-            Perf::counters.tx_grant_pkts.add(1);
-            ControlPacket::send<Protocol::Packet::GrantHeader>(
-                driver, sourceIp, id,
-                Util::downCast<uint32_t>(info->bytesGranted), info->priority);
-            Perf::counters.active_cycles.add(timer.split());
+            // Defer sending the grant packets.
+            grantPackets.at(numGrants) = {
+                sourceIp, id, Util::downCast<uint32_t>(newGrantLimit),
+                info->priority};
+            ++numGrants;
         }
 
         // Update the iterator first since calling unschedule() may cause the
@@ -723,11 +729,23 @@ Receiver::trySendGrants()
 
         if (info->messageLength <= info->bytesGranted) {
             // All packets granted, unschedule the message.
-            unschedule(message, lock);
+            unschedule(message, *sched_lock);
             Perf::counters.active_cycles.add(timer.split());
         }
 
         ++slot;
+    }
+
+    // Release the scheduler mutex before sending out the grant packets.
+    if (numGrants > 0) {
+        sched_lock.destroy();
+        Perf::counters.tx_grant_pkts.add(numGrants);
+        for (int i = 0; i < numGrants; ++i) {
+            auto& [sourceIp, msgId, bytesGranted, priority] = grantPackets[i];
+            ControlPacket::send<Protocol::Packet::GrantHeader>(
+                driver, sourceIp, msgId, bytesGranted, priority);
+        }
+        Perf::counters.active_cycles.add(timer.split());
     }
 
     granting.clear();

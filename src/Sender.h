@@ -75,33 +75,35 @@ class Sender {
          *      Message to which this metadata is associated.
          */
         explicit QueuedMessageInfo(Message* message)
-            : packets(message)
-            , unsentBytes(0)
+            : unsentBytes(0)
+            , mutex()
             , packetsGranted(0)
-            , priority(0)
             , packetsSent(0)
+            , priority(0)
             , sendQueueNode(message)
         {}
 
-        /// Handle to the queue Message for access to the packets that will
-        /// be sent.  This member documents that the packets are logically owned
-        /// by the sendQueue and thus protected by the queueMutex.
-        Message* const packets;
-
         /// The number of bytes that still need to be sent for a queued Message.
+        /// This variable is used to rank messages in the SRPT order so it must
+        /// be protected by Sender::queueMutex.
         int unsentBytes;
+
+        /// Protects member variables that are not directly related to the send
+        /// queue or its SRPT policy. Locking principle: to avoid deadlock,
+        /// Sender::queueMutex must always be acquired before this one.
+        SpinLock mutex;
 
         /// The number of packets that can be sent for this Message.
         int packetsGranted;
 
-        /// The network priority at which this Message should be sent.
-        int priority;
-
         /// The number of packets that have been sent for this Message.
         int packetsSent;
 
+        /// The network priority at which this Message should be sent.
+        int priority;
+
         /// Intrusive structure used to enqueue the associated Message into
-        /// the sendQueue.
+        /// the sendQueue. Protected by Sender::queueMutex.
         Intrusive::List<Message>::Node sendQueueNode;
     };
 
@@ -410,8 +412,9 @@ class Sender {
     /// Tracks all outbound messages being sent by the Sender.
     MessageBucketMap messageBuckets;
 
-    /// Protects the sendQueue.  Locking principle: when a timeout mutex is also
-    /// required, it must be acquired before this sendQueue mutex.
+    /// Protects the sendQueue, including member variables of its element.
+    /// Locking principle: this mutex must be acquired before the timeout mutex
+    /// (clarity and efficiency in trySend() outweigh those in checkTimeouts()).
     SpinLock queueMutex;
 
     /// A list of outbound messages that have unsent packets.  Messages are kept
@@ -430,7 +433,8 @@ class Sender {
     /// Used to allocate Message objects.
     ObjectPool<Message> messageAllocator;
 
-    /// Protects the timeout manager.
+    /// Protects the timeout manager. Locking principle: always acquired after
+    /// queueMutex but before QueuedMessageInfo::mutex.
     SpinLock timeoutMutex;
 
     /// Maintains Message objects in increasing order of ping timeout.

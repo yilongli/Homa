@@ -191,27 +191,25 @@ Sender::handleResendPacket(Driver::Packet* packet, uint64_t now)
     int index = resendHeader->index;
     int resendEnd = index + resendHeader->num;
 
-    SpinLock::Lock lock_queue(queueMutex);
-    QueuedMessageInfo* info = &message->queuedMessageInfo;
-
     // Check if RESEND request is out of range.
-    if (index >= info->packets->numPackets ||
-        resendEnd > info->packets->numPackets) {
+    if (index >= message->numPackets || resendEnd > message->numPackets) {
         WARNING(
             "Message (%lu, %lu) RESEND request range out of bounds: requested "
             "range [%d, %d); message only contains %d packets; peer Transport "
             "may be confused.",
             message->id.transportId, message->id.sequence, index, resendEnd,
-            info->packets->numPackets);
+            message->numPackets);
         return;
     }
 
     // In case a GRANT may have been lost, consider the RESEND a GRANT.
+    QueuedMessageInfo* info = &message->queuedMessageInfo;
+    SpinLock::Lock msg_lock(info->mutex);
     if (info->packetsGranted < resendEnd) {
         info->packetsGranted = resendEnd;
-        // Note that the priority of messages under the unscheduled byte limit
-        // will never be overridden since the resend index will not exceed the
-        // preset packetsGranted.
+        // Note that the priority of messages under the unscheduled byte
+        // limit will never be overridden since the resend index will not
+        // exceed the preset packetsGranted.
         info->priority = resendHeader->priority;
         sendReady.store(true);
     }
@@ -223,14 +221,14 @@ Sender::handleResendPacket(Driver::Packet* packet, uint64_t now)
         // when it's ready.
         Perf::counters.tx_busy_pkts.add(1);
         ControlPacket::send<Protocol::Packet::BusyHeader>(
-            driver, info->packets->destination.ip, info->packets->id);
+            driver, message->destination.ip, message->id);
     } else {
         // There are some packets to resend but only resend packets that have
         // already been sent.
         resendEnd = std::min(resendEnd, info->packetsSent);
         int resendPriority = policyManager->getResendPriority();
         for (int i = index; i < resendEnd; ++i) {
-            Driver::Packet* resendPacket = info->packets->getPacket(i);
+            Driver::Packet* resendPacket = message->getPacket(i);
             Perf::counters.tx_data_pkts.add(1);
             Perf::counters.tx_bytes.add(resendPacket->length);
             driver->sendPacket(resendPacket, message->destination.ip,
@@ -260,27 +258,26 @@ Sender::handleGrantPacket(Driver::Packet* packet, uint64_t now)
     Protocol::Packet::GrantHeader* grantHeader =
         static_cast<Protocol::Packet::GrantHeader*>(packet->payload);
     if (message->getStatus() == OutMessage::Status::IN_PROGRESS) {
-        SpinLock::Lock lock_queue(queueMutex);
-        QueuedMessageInfo* info = &message->queuedMessageInfo;
-
         // Convert the byteLimit to a packet index limit such that the packet
         // that holds the last granted byte is also considered granted.  This
         // can cause at most 1 packet worth of data to be sent without a grant
         // but allows the sender to always send full packets.
         int incomingGrantIndex = Util::roundUpIntDiv(
-            grantHeader->byteLimit, info->packets->PACKET_DATA_LENGTH);
+            grantHeader->byteLimit, message->PACKET_DATA_LENGTH);
 
         // Make that grants don't exceed the number of packets.  Internally,
         // the sender always assumes that packetsGranted <= numPackets.
-        if (incomingGrantIndex > info->packets->numPackets) {
+        if (incomingGrantIndex > message->numPackets) {
             WARNING(
                 "Message (%lu, %lu) GRANT exceeds message length; granted "
                 "packets: %d, message packets %d; extra grants are ignored.",
                 message->id.transportId, message->id.sequence,
-                incomingGrantIndex, info->packets->numPackets);
-            incomingGrantIndex = info->packets->numPackets;
+                incomingGrantIndex, message->numPackets);
+            incomingGrantIndex = message->numPackets;
         }
 
+        QueuedMessageInfo* info = &message->queuedMessageInfo;
+        SpinLock::Lock msg_lock(info->mutex);
         if (info->packetsGranted < incomingGrantIndex) {
             info->packetsGranted = incomingGrantIndex;
             // Note that the priority of messages under the unscheduled byte
@@ -457,7 +454,13 @@ Sender::checkTimeouts()
         } else {
             if (numPingTimeouts >= (uint64_t)MESSAGE_TIMEOUT_INTERVALS) {
                 // Found expired message.
+
+                // Unfortunately, we have to release the timeout mutex first to
+                // avoid deadlock in setStatus(), which is ugly and inefficient;
+                // fortunately, expired message should be pretty rare.
+                timeout_lock.unlock();
                 message->setStatus(OutMessage::Status::FAILED, true);
+                timeout_lock.lock();
                 continue;
             } else {
                 pingTimeouts.setTimeout(&message->pingTimeout);
@@ -466,8 +469,8 @@ Sender::checkTimeouts()
 
         // Check if sender still has packets to send
         if (status == OutMessage::Status::IN_PROGRESS) {
-            SpinLock::Lock lock_queue(queueMutex);
             QueuedMessageInfo* info = &message->queuedMessageInfo;
+            SpinLock::Lock msg_lock(info->mutex);
             if (info->packetsSent < info->packetsGranted) {
                 // Sender is blocked on itself, no need to send ping
                 continue;
@@ -483,8 +486,8 @@ Sender::checkTimeouts()
     timeout_lock.unlock();
     Perf::counters.tx_ping_pkts.add(pingPackets.size());
     for (auto& pair : pingPackets) {
-        ControlPacket::send<Protocol::Packet::PingHeader>(driver, pair.first,
-                                                          pair.second);
+        auto& [ip, msgId] = pair;
+        ControlPacket::send<Protocol::Packet::PingHeader>(driver, ip, msgId);
     }
     return nextCheckTime;
 }
@@ -573,6 +576,8 @@ Sender::Message::getStatus() const
     return state.load(std::memory_order_acquire);
 }
 
+// FIXME: this method is very vulnerable to deadlocks because it's called in so
+// many places yet it acquire locks internally; how to fix?
 /**
  * Change the status of this message.
  *
@@ -582,6 +587,9 @@ Sender::Message::getStatus() const
  *     The new status.
  * @param deschedule
  *     True if we should remove this message from the send queue.
+ *
+ * Note: special care must be taken when calling this method to avoid deadlocks
+ * because our spinlock is not reentrant.
  */
 void
 Sender::Message::setStatus(Status newStatus, bool deschedule)
@@ -847,8 +855,9 @@ Sender::startMessage(Sender::Message* message, bool restart)
             needTimeouts = false;
         }
     } else {
-        // Otherwise, queue the message to be sent in SRPT order.
-        SpinLock::Lock lock_queue(queueMutex);
+        // Otherwise, queue the message to be sent in SRPT order. This message
+        // is not visible to other threads yet, so we can elide the per-message
+        // QueuedMessageInfo::mutex.
         QueuedMessageInfo* info = &message->queuedMessageInfo;
         // Some values need to be updated
         info->unsentBytes = message->messageLength;
@@ -858,6 +867,7 @@ Sender::startMessage(Sender::Message* message, bool restart)
         info->priority = policy.priority;
         info->packetsSent = 0;
         // Insert and move message into the correct order in the priority queue.
+        SpinLock::Lock lock_queue(queueMutex);
         sendQueue.push_front(&info->sendQueueNode);
         Intrusive::deprioritize<Message>(&sendQueue, &info->sendQueueNode);
         sendReady.store(true);
@@ -896,6 +906,11 @@ Sender::trySend()
         return;
     }
 
+    // Used to hold data packets that will be sent out in this method.
+    using DataPacket = std::tuple<Driver::Packet*, IpAddress, int>;
+    std::array<DataPacket, 16> dataPackets;
+    int numPackets = 0;
+
     /* The goal is to send out packets for messages that have bytes that have
      * been "granted" (both scheduled and unscheduled grants).  Messages with
      * the fewest remaining bytes to send (unsentBytes) are sent first (SRPT).
@@ -912,24 +927,25 @@ Sender::trySend()
         Message& message = *it;
         assert(message.getStatus() == OutMessage::Status::IN_PROGRESS);
         QueuedMessageInfo* info = &message.queuedMessageInfo;
-        assert(info->packetsGranted <= info->packets->numPackets);
+
+        SpinLock::UniqueLock msg_lock(info->mutex);
+        assert(info->packetsGranted <= message.numPackets);
         while (info->packetsSent < info->packetsGranted) {
             // There are packets to send
             idle = false;
-            Driver::Packet* packet =
-                info->packets->getPacket(info->packetsSent);
+            Driver::Packet* packet = message.getPacket(info->packetsSent);
             assert(packet != nullptr);
             queuedBytesEstimate += packet->length;
             // Check if the send limit would be reached...
             if (queuedBytesEstimate > DRIVER_QUEUED_BYTE_LIMIT) {
                 break;
             }
-            // ... if not, send away!
-            Perf::counters.tx_data_pkts.add(1);
-            Perf::counters.tx_bytes.add(packet->length);
-            driver->sendPacket(packet, message.destination.ip, info->priority);
+            // ... if not, send away (conceptually)!
+            dataPackets.at(numPackets) = {packet, message.destination.ip,
+                                          info->priority};
+            ++numPackets;
             int packetDataBytes =
-                packet->length - info->packets->TRANSPORT_HEADER_LENGTH;
+                packet->length - message.TRANSPORT_HEADER_LENGTH;
             assert(info->unsentBytes >= packetDataBytes);
             info->unsentBytes -= packetDataBytes;
             // The Message's unsentBytes only ever decreases.  See if the
@@ -937,16 +953,17 @@ Sender::trySend()
             Intrusive::prioritize<Message>(&sendQueue, &info->sendQueueNode);
             ++info->packetsSent;
         }
-        if (info->packetsSent >= info->packets->numPackets) {
+
+        if (info->packetsSent >= message.numPackets) {
             // We have finished sending the message.
 
-            // Advance the iterator first to avoid invalidation.
-            ++it;
-
-            // Unlock the queueMutex before setStatus() since our spinlock is
-            // non-reentrant.
-            lock_queue.unlock();
-            message.setStatus(OutMessage::Status::SENT, true);
+            // Note: instead of relying on setStatus(), manually deschedule this
+            // message since we are already holding the queueMutex (our spinlock
+            // is not reentrant).
+            assert(message.numPackets > 1 &&
+                   message.getStatus() == OutMessage::Status::IN_PROGRESS);
+            it = sendQueue.remove(it);
+            message.setStatus(OutMessage::Status::SENT, false);
 
             if (!message.held.load(std::memory_order_acquire)) {
                 // Ok to delete now that the message has been sent.
@@ -955,15 +972,14 @@ Sender::trySend()
                 // No timeouts need to be checked after sending the message when
                 // the NO_KEEP_ALIVE option is enabled.
 
-                // Note: we can't be holding queueMutex here because our locking
-                // principle dictates that the timeout mutex must be acquired
-                // before sendQueue mutex.
+                // Note: our locking principle dictates that the global timeout
+                // mutex must be acquired before the fine-grained message mutex.
+                msg_lock.unlock();
                 if (message.needTimeouts) {
                     SpinLock::Lock timeout_lock(timeoutMutex);
                     pingTimeouts.cancelTimeout(&message.pingTimeout);
                 }
             }
-            lock_queue.lock();
         } else if (info->packetsSent >= info->packetsGranted) {
             // We have sent every granted packet.
             ++it;
@@ -974,6 +990,16 @@ Sender::trySend()
             break;
         }
     }
+
+    // Send out the data packets after releasing the sendQueue mutex.
+    lock_queue.unlock();
+    for (int i = 0; i < numPackets; ++i) {
+        auto& [packet, ip, priority] = dataPackets[i];
+        Perf::counters.tx_data_pkts.add(1);
+        Perf::counters.tx_bytes.add(packet->length);
+        driver->sendPacket(packet, ip, priority);
+    }
+
     sending.clear();
 
     if (!idle) {

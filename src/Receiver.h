@@ -445,7 +445,6 @@ class Receiver {
         Intrusive::List<Peer>::Node scheduledPeerNode;
     };
 
-    void checkResendTimeouts(uint64_t now, MessageBucket* bucket);
     void trySendGrants();
     void schedule(Message* message, const SpinLock::Lock& lock);
     void unschedule(Message* message, const SpinLock::Lock& lock);
