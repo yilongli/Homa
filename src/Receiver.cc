@@ -133,7 +133,7 @@ Receiver::handleIncomingPacket(Driver::Packet* packet, uint64_t now,
             message = messageAllocator.construct(
                 this, driver, sizeof(Protocol::Packet::DataHeader),
                 messageLength, header->common.messageId, srcAddress,
-                numUnscheduledPackets);
+                numUnscheduledPackets, header->needAck);
             Perf::counters.allocated_rx_messages.add(1);
 
             // Start tracking the message.
@@ -224,6 +224,13 @@ Receiver::handleDataPacket(Driver::Packet* packet, uint64_t now,
         SpinLock::Lock lock_received_messages(receivedMessages.mutex);
         receivedMessages.queue.push_back(&message->receivedMessageNode);
         Perf::counters.received_rx_messages.add(1);
+
+        // Send back an ACK if it's requested by the sender.
+        if (message->needAck) {
+            Perf::counters.tx_ack_pkts.add(1);
+            ControlPacket::send<Protocol::Packet::AckHeader>(
+                driver, message->source.ip, message->id);
+        }
     }
     return true;
 }
@@ -521,16 +528,6 @@ Receiver::Message::~Message()
         // Release the last region (if any).
         driver->releasePackets(&packets[index], num);
     }
-}
-
-/**
- * @copydoc Homa::InMessage::acknowledge()
- */
-void
-Receiver::Message::acknowledge() const
-{
-    Perf::counters.tx_done_pkts.add(1);
-    ControlPacket::send<Protocol::Packet::DoneHeader>(driver, source.ip, id);
 }
 
 /**

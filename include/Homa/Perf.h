@@ -78,10 +78,10 @@ struct Stats {
     uint64_t rx_grant_pkts;
 
     /// Number of done packets sent.
-    uint64_t tx_done_pkts;
+    uint64_t tx_ack_pkts;
 
     /// Number of done packets received.
-    uint64_t rx_done_pkts;
+    uint64_t rx_ack_pkts;
 
     /// Number of resend packets sent.
     uint64_t tx_resend_pkts;
@@ -106,12 +106,6 @@ struct Stats {
 
     /// Number of unknown packets received.
     uint64_t rx_unknown_pkts;
-
-    /// Number of error packets sent.
-    uint64_t tx_error_pkts;
-
-    /// Number of error packets received.
-    uint64_t rx_error_pkts;
 };
 
 /**

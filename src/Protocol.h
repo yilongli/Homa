@@ -97,12 +97,11 @@ namespace Packet {
 enum Opcode {
     DATA = 21,
     GRANT = 22,
-    DONE = 23,
+    ACK = 23,
     RESEND = 24,
     BUSY = 25,
     PING = 26,
     UNKNOWN = 27,
-    ERROR = 28,
 };
 
 /**
@@ -160,8 +159,9 @@ struct DataHeader {
     uint16_t unscheduledIndexLimit;  ///< Packets with an index up to (but not
                                      ///< including) this value will be sent
                                      ///< without being granted.
-    uint16_t index;  ///< Index of this packet in the array of packets that form
-                     ///< the message.
+    uint16_t index : 15;  ///< Index of this packet in the array of packets that
+                          ///< form the message.
+    uint16_t needAck : 1;  ///< Used by the Sender to request an ACK packet.
 
     // The remaining packet bytes after the header constitute message data
     // starting at the offset corresponding to the given packet index.
@@ -169,12 +169,13 @@ struct DataHeader {
     /// DataHeader constructor.
     DataHeader(uint16_t sport, uint16_t dport, MessageId messageId,
                uint32_t totalLength, uint8_t policyVersion,
-               uint16_t unscheduledIndexLimit, uint16_t index)
+               uint16_t unscheduledIndexLimit, uint16_t index, bool needAck)
         : common(Opcode::DATA, messageId)
         , totalLength(totalLength)
         , policyVersion(policyVersion)
         , unscheduledIndexLimit(unscheduledIndexLimit)
         , index(index)
+        , needAck(needAck)
     {
         common.prefix.sport = htobe16(sport);
         common.prefix.dport = htobe16(dport);
@@ -203,17 +204,17 @@ struct GrantHeader {
 } __attribute__((packed));
 
 /**
- * Describes the wire format for a DONE packet.  The DONE packet is sent by a
- * Receiver on behalf of its application to signal that a particular Message
- * has been delivered to and processed by the application.  The transport will
- * try to ensure reliable delivery of a Message until DONE is received.
+ * Describes the wire format for a ACK packet.  The ACK packet is sent by a
+ * Receiver to signal that a particular Message has been fully received. The
+ * transport will try to ensure reliable delivery of a Message until ACK is
+ * received.
  */
-struct DoneHeader {
+struct AckHeader {
     CommonHeader common;  ///< Common header fields.
 
     /// DoneHeader constructor.
-    DoneHeader(MessageId messageId)
-        : common(Opcode::DONE, messageId)
+    AckHeader(MessageId messageId)
+        : common(Opcode::ACK, messageId)
     {}
 } __attribute__((packed));
 
@@ -281,20 +282,6 @@ struct UnknownHeader {
     /// UnknownHeader constructor.
     UnknownHeader(MessageId messageId)
         : common(Opcode::UNKNOWN, messageId)
-    {}
-} __attribute__((packed));
-
-/**
- * Describes the wire format for a ERROR packet.  The ERROR packet is used to
- * indicate that the Operation associated with a particular Message has
- * encountered a transport level error.
- */
-struct ErrorHeader {
-    CommonHeader common;  ///< Common header fields.
-
-    /// ErrorHeader constructor.
-    ErrorHeader(MessageId messageId)
-        : common(Opcode::ERROR, messageId)
     {}
 } __attribute__((packed));
 

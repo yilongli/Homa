@@ -66,11 +66,6 @@ class InMessage {
     };
 
     /**
-     * Inform the sender that this message has been processed successfully.
-     */
-    virtual void acknowledge() const = 0;
-
-    /**
      * Get the contents of a specified range of bytes in the Message by
      * copying them into the provided destination memory region.
      *
@@ -126,27 +121,30 @@ class OutMessage {
     enum class Status {
         NOT_STARTED,  //< The sending of this message has not started.
         IN_PROGRESS,  //< The message is in the process of being sent.
-        CANCELED,     //< The message was canceled while still IN_PROGRESS.
         SENT,         //< The message has been completely sent.
-        COMPLETED,    //< The message has been received and processed.
-        FAILED,       //< The message failed to be delivered and processed.
+        CANCELED,     //< The message was canceled while still IN_PROGRESS.
+        DONE,         //< The message is considered completed by the sender.
+        FAILED,       //< The message failed to be delivered.
     };
 
     /**
-     * Options with which an OutMessage can be sent.
+     * Reliability guarantee with which an OutMessage can be sent.
      */
     enum Options {
-        /// Default send behavior.
-        NONE = 0,
+        /// Default send behavior. The transport will make its best effort to
+        /// deliver the message only once to the receiver but it can't provide
+        /// provide any guarantee.
+        PROBABLY_ONCE = 0,
 
-        /// Message will not be resent if recoverable send failure occurs;
-        /// provides at-most-once delivery of messages.
-        NO_RETRY = 1 << 0,
+        /// When the message is completed without failure, the message is
+        /// guaranteed to be delivered at least once to the receiver. However,
+        /// in the presence of failure, the message may be delivered any number
+        /// of times (including zero).
+        AT_LEAST_ONCE = 1,
 
-        /// Once the Message has been sent, Homa will not automatically ping the
-        /// Message's receiver to ensure the receiver is still alive and the
-        /// Message will not "timeout" due to receiver inactivity.
-        NO_KEEP_ALIVE = 1 << 1,
+        /// The transport guarantees that the message will be delivered at most
+        /// once to the receiver, regardless of its end Status (DONE or FAILED).
+        AT_MOST_ONCE = 2,
     };
 
     /**
@@ -227,7 +225,7 @@ class OutMessage {
      *      Flags to request non-default sending behavior.
      */
     virtual void send(SocketAddress destination,
-                      Options options = Options::NONE) = 0;
+                      Options options = Options::PROBABLY_ONCE) = 0;
 
   protected:
     /**
@@ -301,17 +299,6 @@ class Transport {
      */
     virtual uint64_t getId() = 0;
 };
-
-/**
- * Combine Options flags.
- */
-inline OutMessage::Options
-operator|(OutMessage::Options lhs, OutMessage::Options rhs)
-{
-    typedef std::underlying_type<OutMessage::Options>::type options_t;
-    return OutMessage::Options(static_cast<options_t>(lhs) |
-                               static_cast<options_t>(rhs));
-}
 
 }  // namespace Homa
 

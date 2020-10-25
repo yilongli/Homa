@@ -98,60 +98,60 @@ Sender::handleIncomingPacket(Driver::Packet* packet)
 }
 
 /**
- * Process an incoming DONE packet.
+ * Process an incoming ACK packet.
  *
  * @param packet
- *      Incoming DONE packet to be processed.
+ *      Incoming ACK packet to be processed.
  */
 void
-Sender::handleDonePacket(Driver::Packet* packet)
+Sender::handleAckPacket(Driver::Packet* packet)
 {
     Message* message = handleIncomingPacket(packet);
     if (message == nullptr) {
-        // No message for this DONE packet; must be old.
+        // No message for this ACK packet; must be old.
         return;
     }
 
-    // Process DONE packet
+    // Process ACK packet
     Protocol::MessageId msgId = message->id;
     OutMessage::Status status = message->getStatus();
     switch (status) {
         case OutMessage::Status::SENT:
             // Expected behavior
-            message->setStatus(OutMessage::Status::COMPLETED, false);
+            message->setStatus(OutMessage::Status::DONE, false);
             break;
         case OutMessage::Status::CANCELED:
-            // Canceled by the the application; just ignore the DONE.
+            // Canceled by the the application; just ignore the ACK.
             break;
-        case OutMessage::Status::COMPLETED:
+        case OutMessage::Status::DONE:
             // Message already DONE
-            NOTICE("Message (%lu, %lu) received duplicate DONE confirmation",
+            NOTICE("Message (%lu, %lu) received duplicate ACK confirmation",
                    msgId.transportId, msgId.sequence);
             break;
         case OutMessage::Status::FAILED:
             WARNING(
-                "Message (%lu, %lu) received DONE confirmation after the "
+                "Message (%lu, %lu) received ACK confirmation after the "
                 "message was already declared FAILED",
                 msgId.transportId, msgId.sequence);
             break;
         case OutMessage::Status::NOT_STARTED:
             WARNING(
-                "Message (%lu, %lu) received DONE confirmation but sending has "
-                "NOT_STARTED (message not yet sent); DONE is ignored.",
+                "Message (%lu, %lu) received ACK confirmation but sending has "
+                "NOT_STARTED (message not yet sent); ACK is ignored.",
                 msgId.transportId, msgId.sequence);
             break;
         case OutMessage::Status::IN_PROGRESS:
             WARNING(
-                "Message (%lu, %lu) received DONE confirmation while sending "
-                "is still IN_PROGRESS (message not completely sent); DONE is "
+                "Message (%lu, %lu) received ACK confirmation while sending "
+                "is still IN_PROGRESS (message not completely sent); ACK is "
                 "ignored.",
                 msgId.transportId, msgId.sequence);
             break;
         default:
             // Unexpected status
             ERROR(
-                "Message (%lu, %lu) received DONE confirmation while in an "
-                "unexpected state; DONE is ignored.",
+                "Message (%lu, %lu) received ACK confirmation while in an "
+                "unexpected state; ACK is ignored.",
                 msgId.transportId, msgId.sequence);
             break;
     }
@@ -310,73 +310,13 @@ Sender::handleUnknownPacket(Driver::Packet* packet)
         status != OutMessage::Status::SENT) {
         // The message is already considered "done" so the UNKNOWN packet
         // must be a stale response to a ping.
-    } else if (message->options & OutMessage::Options::NO_RETRY) {
-        // Option: NO_RETRY
-        // Either the Message or the DONE packet was lost; consider the message
+    } else if (message->needRetry) {
+        // Either the Message or the ACK packet was lost; consider the message
         // failed since the application asked for the message not to be retried.
         message->setStatus(OutMessage::Status::FAILED, true);
     } else {
         // Message isn't done yet so we will restart sending the message.
         startMessage(message, true);
-    }
-}
-
-/**
- * Process an incoming ERROR packet.
- *
- * @param packet
- *      Incoming ERROR packet to be processed.
- */
-void
-Sender::handleErrorPacket(Driver::Packet* packet)
-{
-    Message* message = handleIncomingPacket(packet);
-    if (message == nullptr) {
-        // No message for this ERROR packet; must be old.
-        return;
-    }
-
-    Protocol::MessageId msgId = message->id;
-    OutMessage::Status status = message->getStatus();
-    switch (status) {
-        case OutMessage::Status::SENT:
-            // Message was sent and a failure notification was received.
-            message->setStatus(OutMessage::Status::FAILED, false);
-            break;
-        case OutMessage::Status::CANCELED:
-            // Canceled by the the application; just ignore the ERROR.
-            break;
-        case OutMessage::Status::NOT_STARTED:
-            WARNING(
-                "Message (%lu, %lu) received ERROR notification but sending "
-                "has NOT_STARTED (message not yet sent); ERROR is ignored.",
-                msgId.transportId, msgId.sequence);
-            break;
-        case OutMessage::Status::IN_PROGRESS:
-            WARNING(
-                "Message (%lu, %lu) received ERROR notification while sending "
-                "is still IN_PROGRESS (message not completely sent); ERROR is "
-                "ignored.",
-                msgId.transportId, msgId.sequence);
-            break;
-        case OutMessage::Status::COMPLETED:
-            // Message already DONE
-            WARNING(
-                "Message (%lu, %lu) received ERROR notification after the "
-                "message was already declared COMPLETED; ERROR is ignored.",
-                msgId.transportId, msgId.sequence);
-            break;
-        case OutMessage::Status::FAILED:
-            NOTICE("Message (%lu, %lu) received duplicate ERROR notification.",
-                   msgId.transportId, msgId.sequence);
-            break;
-        default:
-            // Unexpected status
-            ERROR(
-                "Message (%lu, %lu) received ERROR notification while in an "
-                "unexpected state; ERROR is ignored.",
-                msgId.transportId, msgId.sequence);
-            break;
     }
 }
 
@@ -447,24 +387,18 @@ Sender::checkTimeouts()
         OutMessage::Status status = message->getStatus();
         assert(status == OutMessage::Status::IN_PROGRESS ||
                status == OutMessage::Status::SENT);
-        if (message->options & OutMessage::Options::NO_KEEP_ALIVE &&
-            status == OutMessage::Status::SENT) {
-            pingTimeouts.cancelTimeout(&message->pingTimeout);
+        if (numPingTimeouts >= (uint64_t)MESSAGE_TIMEOUT_INTERVALS) {
+            // Found expired message.
+
+            // Unfortunately, we have to release the timeout mutex first to
+            // avoid deadlock in setStatus(), which is ugly and inefficient;
+            // fortunately, expired message should be pretty rare.
+            timeout_lock.unlock();
+            message->setStatus(OutMessage::Status::FAILED, true);
+            timeout_lock.lock();
             continue;
         } else {
-            if (numPingTimeouts >= (uint64_t)MESSAGE_TIMEOUT_INTERVALS) {
-                // Found expired message.
-
-                // Unfortunately, we have to release the timeout mutex first to
-                // avoid deadlock in setStatus(), which is ugly and inefficient;
-                // fortunately, expired message should be pretty rare.
-                timeout_lock.unlock();
-                message->setStatus(OutMessage::Status::FAILED, true);
-                timeout_lock.lock();
-                continue;
-            } else {
-                pingTimeouts.setTimeout(&message->pingTimeout);
-            }
+            pingTimeouts.setTimeout(&message->pingTimeout);
         }
 
         // Check if sender still has packets to send
@@ -485,8 +419,7 @@ Sender::checkTimeouts()
     // Release the timeout mutex before actually sending out the PING packets.
     timeout_lock.unlock();
     Perf::counters.tx_ping_pkts.add(pingPackets.size());
-    for (auto& pair : pingPackets) {
-        auto& [ip, msgId] = pair;
+    for (auto& [ip, msgId] : pingPackets) {
         ControlPacket::send<Protocol::Packet::PingHeader>(driver, ip, msgId);
     }
     return nextCheckTime;
@@ -576,8 +509,6 @@ Sender::Message::getStatus() const
     return state.load(std::memory_order_acquire);
 }
 
-// FIXME: this method is very vulnerable to deadlocks because it's called in so
-// many places yet it acquire locks internally; how to fix?
 /**
  * Change the status of this message.
  *
@@ -614,7 +545,7 @@ Sender::Message::setStatus(Status newStatus, bool deschedule)
 
     // Cancel the timeouts if the message reaches an end state.
     if (needTimeouts && (newStatus == OutMessage::Status::CANCELED ||
-                         newStatus == OutMessage::Status::COMPLETED ||
+                         newStatus == OutMessage::Status::DONE ||
                          newStatus == OutMessage::Status::FAILED)) {
         SpinLock::Lock lock(sender->timeoutMutex);
         sender->pingTimeouts.cancelTimeout(&pingTimeout);
@@ -728,7 +659,36 @@ Sender::Message::send(SocketAddress destination,
 {
     // Prepare the message
     this->destination = destination;
-    this->options = options;
+
+    // Set the behavior flags based on the requested message semantics.
+    switch (options) {
+        case Options::AT_MOST_ONCE:
+            // TODO(cstlee): at-most-once semantics needs duplicate suppression
+        case Options::PROBABLY_ONCE:
+            // Strictly speaking, we don't need to wait for an ACK if the
+            // message can be unreliable. However, we would like to reduce
+            // the chance of having to drop the entire message just because
+            // the last few packets are lost.
+            needAck = (numPackets > 1);
+            needTimeouts = (numPackets > 1);
+            needRetry = false;
+            break;
+        case Options::AT_LEAST_ONCE:
+            // If we want to ensure that the message is delivered at least once
+            // before reporting success to the application, we need to wait for
+            // an acknowledgement from the receiver. Furthermore, in the rare
+            // case when the receiver complains the lack of knowledge about the
+            // message (either the entire message or the ACK packet is lost),
+            // we need to retransmit the entire message.
+            needAck = true;
+            needTimeouts = true;
+            needRetry = true;
+            break;
+        default:
+            // Dead code
+            assert(false);
+            break;
+    }
 
     // Kick start the transmission.
     sender->startMessage(this, false);
@@ -808,7 +768,7 @@ Sender::startMessage(Sender::Message* message, bool restart)
                 message->source.port, message->destination.port, message->id,
                 Util::downCast<uint32_t>(message->messageLength),
                 policy.version, unscheduledIndexLimit,
-                Util::downCast<uint16_t>(i));
+                Util::downCast<uint16_t>(i), message->needAck);
             actualMessageLen +=
                 (packet->length - message->TRANSPORT_HEADER_LENGTH);
         }
@@ -833,7 +793,6 @@ Sender::startMessage(Sender::Message* message, bool restart)
 
     // Kick start the message.
     assert(message->numPackets > 0);
-    bool needTimeouts = true;
     if (message->numPackets == 1) {
         // If there is only one packet in the message, send it right away.
         Driver::Packet* dataPacket = message->getPacket(0);
@@ -842,18 +801,15 @@ Sender::startMessage(Sender::Message* message, bool restart)
         Perf::counters.tx_bytes.add(dataPacket->length);
         driver->sendPacket(dataPacket, message->destination.ip,
                            policy.priority);
-        message->setStatus(OutMessage::Status::SENT, false);
+        message->setStatus(message->needAck ? OutMessage::Status::SENT
+                                            : OutMessage::Status::DONE,
+                           false);
         // This message must be still be held by the application since the
         // message still exists (it would have been removed when dropped
         // because single packet messages are never IN_PROGRESS). Assuming
         // the message is still held, we can skip the auto removal of SENT
         // and !held messages.
         assert(message->held);
-        if (message->options & OutMessage::Options::NO_KEEP_ALIVE) {
-            // No timeouts need to be checked after sending the message when
-            // the NO_KEEP_ALIVE option is enabled.
-            needTimeouts = false;
-        }
     } else {
         // Otherwise, queue the message to be sent in SRPT order. This message
         // is not visible to other threads yet, so we can elide the per-message
@@ -874,9 +830,6 @@ Sender::startMessage(Sender::Message* message, bool restart)
     }
 
     // Initialize the timeouts
-    if (!restart) {
-        message->needTimeouts = needTimeouts;
-    }
     if (message->needTimeouts) {
         message->lastAliveTime.store(PerfUtils::Cycles::rdtsc(),
                                      std::memory_order_release);
@@ -963,22 +916,21 @@ Sender::trySend()
             assert(message.numPackets > 1 &&
                    message.getStatus() == OutMessage::Status::IN_PROGRESS);
             it = sendQueue.remove(it);
-            message.setStatus(OutMessage::Status::SENT, false);
-
-            if (!message.held.load(std::memory_order_acquire)) {
-                // Ok to delete now that the message has been sent.
-                messageAllocator.destroy(&message);
-            } else if (message.options & OutMessage::Options::NO_KEEP_ALIVE) {
-                // No timeouts need to be checked after sending the message when
-                // the NO_KEEP_ALIVE option is enabled.
-
+            if (message.needAck) {
+                message.setStatus(OutMessage::Status::SENT, false);
+            } else {
                 // Note: our locking principle dictates that the global timeout
                 // mutex must be acquired before the fine-grained message mutex.
                 msg_lock.unlock();
-                if (message.needTimeouts) {
-                    SpinLock::Lock timeout_lock(timeoutMutex);
-                    pingTimeouts.cancelTimeout(&message.pingTimeout);
-                }
+                message.setStatus(OutMessage::Status::DONE, false);
+            }
+
+            if (!message.held.load(std::memory_order_acquire)) {
+                // Ok to delete now that the message has been sent. This is fine
+                // even if the application requested at-least-once semantics for
+                // this message initially as there is no way for the application
+                // to find out the result of this message anyway.
+                messageAllocator.destroy(&message);
             }
         } else if (info->packetsSent >= info->packetsGranted) {
             // We have sent every granted packet.

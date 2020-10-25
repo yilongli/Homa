@@ -139,10 +139,9 @@ TransportImpl::processPacket(Driver::Packet* packet, IpAddress sourceIp,
             Perf::counters.rx_grant_pkts.add(1);
             sender->handleGrantPacket(packet, now);
             break;
-        case Protocol::Packet::DONE:
-            // fixme: rename DONE to ACK?
-            Perf::counters.rx_done_pkts.add(1);
-            sender->handleDonePacket(packet);
+        case Protocol::Packet::ACK:
+            Perf::counters.rx_ack_pkts.add(1);
+            sender->handleAckPacket(packet);
             break;
         case Protocol::Packet::RESEND:
             Perf::counters.rx_resend_pkts.add(1);
@@ -159,11 +158,6 @@ TransportImpl::processPacket(Driver::Packet* packet, IpAddress sourceIp,
         case Protocol::Packet::UNKNOWN:
             Perf::counters.rx_unknown_pkts.add(1);
             sender->handleUnknownPacket(packet);
-            break;
-        case Protocol::Packet::ERROR:
-            // FIXME: remove ERROR?
-            Perf::counters.rx_error_pkts.add(1);
-            sender->handleErrorPacket(packet);
             break;
     }
     return retainPacket;

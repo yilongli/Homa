@@ -140,7 +140,7 @@ class Receiver {
         explicit Message(Receiver* receiver, Driver* driver,
                          size_t packetHeaderLength, int messageLength,
                          Protocol::MessageId id, SocketAddress source,
-                         int numUnscheduledPackets)
+                         int numUnscheduledPackets, bool needAck)
             : driver(driver)
             , id(id)
             , bucket(receiver->messageBuckets.getBucket(id))
@@ -162,13 +162,13 @@ class Receiver {
             , bucketNode(this)
             , receivedMessageNode(this)
             , lastAliveTime()
+            , needAck(needAck)
             , needTimeouts(numExpectedPackets > 1)
             , resendTimeout(this)
             , scheduledMessageInfo(this, messageLength)
         {}
 
         virtual ~Message();
-        void acknowledge() const override;
         size_t get(size_t offset, void* destination,
                    size_t count) const override;
         size_t length() const override;
@@ -253,9 +253,14 @@ class Receiver {
         /// message is still alive.  No need to set if _needTimeouts_ is false.
         std::atomic<uint64_t> lastAliveTime;
 
+        /// Whether the Sender requests an ACK to be sent back once the entire
+        /// message is received.
+        const bool needAck;
+
         /// True if this message needs to be tracked by the timeout manager
         /// (i.e., this message will be linked into Receiver::resendTimeouts).
-        /// Currently, this is set to true for all single-packet messages.
+        /// As an inbound message, it only makes sense to set this variable to
+        /// false when the message fits in a single packet.
         const bool needTimeouts;
 
         /// Intrusive structure used by the Receiver to keep track when

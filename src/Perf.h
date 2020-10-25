@@ -93,8 +93,8 @@ struct Counters {
         , rx_data_pkts(0)
         , tx_grant_pkts(0)
         , rx_grant_pkts(0)
-        , tx_done_pkts(0)
-        , rx_done_pkts(0)
+        , tx_ack_pkts(0)
+        , rx_ack_pkts(0)
         , tx_resend_pkts(0)
         , rx_resend_pkts(0)
         , tx_busy_pkts(0)
@@ -103,8 +103,6 @@ struct Counters {
         , rx_ping_pkts(0)
         , tx_unknown_pkts(0)
         , rx_unknown_pkts(0)
-        , tx_error_pkts(0)
-        , rx_error_pkts(0)
     {}
 
     /**
@@ -132,8 +130,8 @@ struct Counters {
         rx_data_pkts.add(other->rx_data_pkts);
         tx_grant_pkts.add(other->tx_grant_pkts);
         rx_grant_pkts.add(other->rx_grant_pkts);
-        tx_done_pkts.add(other->tx_done_pkts);
-        rx_done_pkts.add(other->rx_done_pkts);
+        tx_ack_pkts.add(other->tx_ack_pkts);
+        rx_ack_pkts.add(other->rx_ack_pkts);
         tx_resend_pkts.add(other->tx_resend_pkts);
         rx_resend_pkts.add(other->rx_resend_pkts);
         tx_busy_pkts.add(other->tx_busy_pkts);
@@ -142,8 +140,6 @@ struct Counters {
         rx_ping_pkts.add(other->rx_ping_pkts);
         tx_unknown_pkts.add(other->tx_unknown_pkts);
         rx_unknown_pkts.add(other->rx_unknown_pkts);
-        tx_error_pkts.add(other->tx_error_pkts);
-        rx_error_pkts.add(other->rx_error_pkts);
     }
 
     /**
@@ -166,8 +162,8 @@ struct Counters {
         stats->rx_data_pkts = rx_data_pkts.get();
         stats->tx_grant_pkts = tx_grant_pkts.get();
         stats->rx_grant_pkts = rx_grant_pkts.get();
-        stats->tx_done_pkts = tx_done_pkts.get();
-        stats->rx_done_pkts = rx_done_pkts.get();
+        stats->tx_ack_pkts = tx_ack_pkts.get();
+        stats->rx_ack_pkts = rx_ack_pkts.get();
         stats->tx_resend_pkts = tx_resend_pkts.get();
         stats->rx_resend_pkts = rx_resend_pkts.get();
         stats->tx_busy_pkts = tx_busy_pkts.get();
@@ -176,8 +172,6 @@ struct Counters {
         stats->rx_ping_pkts = rx_ping_pkts.get();
         stats->tx_unknown_pkts = tx_unknown_pkts.get();
         stats->rx_unknown_pkts = rx_unknown_pkts.get();
-        stats->tx_error_pkts = tx_error_pkts.get();
-        stats->rx_error_pkts = rx_error_pkts.get();
     }
 
     /// CPU time spent running the Homa poll loop in cycles.
@@ -225,11 +219,11 @@ struct Counters {
     /// Number of grant packets received.
     Stat<uint64_t> rx_grant_pkts;
 
-    /// Number of done packets sent.
-    Stat<uint64_t> tx_done_pkts;
+    /// Number of ack packets sent.
+    Stat<uint64_t> tx_ack_pkts;
 
-    /// Number of done packets received.
-    Stat<uint64_t> rx_done_pkts;
+    /// Number of ack packets received.
+    Stat<uint64_t> rx_ack_pkts;
 
     /// Number of resend packets sent.
     Stat<uint64_t> tx_resend_pkts;
@@ -254,12 +248,6 @@ struct Counters {
 
     /// Number of unknown packets received.
     Stat<uint64_t> rx_unknown_pkts;
-
-    /// Number of error packets sent.
-    Stat<uint64_t> tx_error_pkts;
-
-    /// Number of error packets received.
-    Stat<uint64_t> rx_error_pkts;
 };
 
 /**

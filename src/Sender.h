@@ -48,11 +48,10 @@ class Sender {
     virtual ~Sender() = default;
 
     virtual Homa::OutMessage* allocMessage(uint16_t sourcePort);
-    virtual void handleDonePacket(Driver::Packet* packet);
+    virtual void handleAckPacket(Driver::Packet* packet);
     virtual void handleResendPacket(Driver::Packet* packet, uint64_t now);
     virtual void handleGrantPacket(Driver::Packet* packet, uint64_t now);
     virtual void handleUnknownPacket(Driver::Packet* packet);
-    virtual void handleErrorPacket(Driver::Packet* packet);
 
     virtual void poll();
     virtual uint64_t checkTimeouts();
@@ -137,7 +136,6 @@ class Sender {
             , bucket(sender->messageBuckets.getBucket(id))
             , source{driver->getLocalAddress(), sourcePort}
             , destination()
-            , options(Options::NONE)
             , held(true)
             , start(0)
             , messageLength(0)
@@ -148,7 +146,9 @@ class Sender {
             , state(Status::NOT_STARTED)
             , bucketNode(this)
             , lastAliveTime(0)
+            , needAck()
             , needTimeouts()
+            , needRetry()
             , pingTimeout(this)
             , queuedMessageInfo(this)
         {}
@@ -162,8 +162,7 @@ class Sender {
         void prepend(const void* source, size_t count) override;
         void release() override;
         void reserve(size_t count) override;
-        void send(SocketAddress destination,
-                  Options options = Options::NONE) override;
+        void send(SocketAddress destination, Options options) override;
 
       private:
         /// Define the maximum number of packets that a message can hold.
@@ -198,10 +197,6 @@ class Sender {
         /// Contains destination address of this message. Must be constant after
         /// send() is invoked.
         SocketAddress destination;
-
-        /// Contains flags for any requested optional send behavior. Must be
-        /// constant after send() is invoked.
-        Options options;
 
         /// True if a pointer to this message is accessible by the application
         /// (e.g. the message has been allocated via allocMessage() but has not
@@ -242,10 +237,21 @@ class Sender {
         /// message is still alive.  No need to set if _needTimeouts_ is false.
         std::atomic<uint64_t> lastAliveTime;
 
-        /// True if this message needs to be tracked by the timeout manager
-        /// (i.e., this message will be linked into Sender::pingTimeouts).
+        /// Whether the sender is expecting an ACK for this message from the
+        /// receiver.  If this value is false, the status of this message can
+        /// transit to DONE as soon as the last packet is sent. Must be constant
+        /// after send() is invoked.
+        bool needAck;
+
+        /// Whether this message needs to be tracked by the timeout manager
+        /// (i.e., linked into Sender::pingTimeouts) in the first place.
         /// Must be constant after send() is invoked.
         bool needTimeouts;
+
+        /// Whether the Sender should respond to incoming UNKNOWN packets about
+        /// this message by restarting the transmission.  Necessary to support
+        /// at-least-once semantics. Must be constant after send() is invoked.
+        bool needRetry;
 
         /// Intrusive structure used by the Sender to keep track when this
         /// message should be checked to ensure progress is still being made.
