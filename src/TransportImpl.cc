@@ -90,16 +90,11 @@ TransportImpl::processPackets()
     Driver::Packet* packets[MAX_BURST];
     IpAddress srcAddrs[MAX_BURST];
     int numPackets = driver->receivePackets(MAX_BURST, packets, srcAddrs);
-    int releaseCount = 0;
-
     uint64_t now = PerfUtils::Cycles::rdtsc();
     for (int i = 0; i < numPackets; ++i) {
-        bool retainPacket = processPacket(packets[i], srcAddrs[i], now);
-        if (!retainPacket) {
-            packets[releaseCount++] = packets[i];
-        }
+        processPacket(packets[i], srcAddrs[i], now);
     }
-    driver->releasePackets(packets, releaseCount);
+    driver->releasePackets(packets, numPackets);
 
     if (numPackets > 0) {
         Perf::counters.active_cycles.add(timer.split());
@@ -107,7 +102,9 @@ TransportImpl::processPackets()
 }
 
 /**
- * Process an incoming packet.
+ * Process an incoming packet.  The transport will have no more use of this
+ * packet afterwards, so the packet can be released to the driver when the
+ * method returns.
  *
  * @param packet
  *      Incoming packet to be processed.
@@ -115,12 +112,8 @@ TransportImpl::processPackets()
  *      Source IP address.
  * @param now
  *      The rdtsc cycle that should be considered the "current" time.
- * @return
- *      True if the transport decides to take ownership of the packet. False
- *      if the transport has no more use of this packet and it can be released
- *      to the driver.
  */
-bool
+void
 TransportImpl::processPacket(Driver::Packet* packet, IpAddress sourceIp,
                              uint64_t now)
 {
@@ -129,11 +122,10 @@ TransportImpl::processPacket(Driver::Packet* packet, IpAddress sourceIp,
     Perf::counters.rx_bytes.add(packet->length);
     Protocol::Packet::CommonHeader* header =
         static_cast<Protocol::Packet::CommonHeader*>(packet->payload);
-    bool retainPacket = false;
     switch (header->opcode) {
         case Protocol::Packet::DATA:
             Perf::counters.rx_data_pkts.add(1);
-            retainPacket = receiver->handleDataPacket(packet, now, sourceIp);
+            receiver->handleDataPacket(packet, now, sourceIp);
             break;
         case Protocol::Packet::GRANT:
             Perf::counters.rx_grant_pkts.add(1);
@@ -160,7 +152,6 @@ TransportImpl::processPacket(Driver::Packet* packet, IpAddress sourceIp,
             sender->handleUnknownPacket(packet);
             break;
     }
-    return retainPacket;
 }
 
 }  // namespace Core

@@ -48,7 +48,7 @@ class Receiver {
                       uint64_t messageTimeoutCycles,
                       uint64_t resendIntervalCycles);
     virtual ~Receiver();
-    virtual bool handleDataPacket(Driver::Packet* packet, uint64_t now,
+    virtual void handleDataPacket(Driver::Packet* packet, uint64_t now,
                                   IpAddress sourceIp);
     virtual void handleBusyPacket(Driver::Packet* packet, uint64_t now);
     virtual void handlePingPacket(Driver::Packet* packet, uint64_t now,
@@ -152,12 +152,14 @@ class Receiver {
                   Util::roundUpIntDiv(messageLength, PACKET_DATA_LENGTH))
             , numUnscheduledPackets(numUnscheduledPackets)
             , scheduled(numExpectedPackets > numUnscheduledPackets)
-            , start(0)
             , messageLength(messageLength)
+            , mutex()
             , numPackets(0)
             , occupied()
-            // packets is not initialized to reduce the work done during
-            // construction. See Message::occupied.
+            , buffer(messageLength <= Util::arrayLength(internalBuffer)
+                         ? internalBuffer
+                         : receiver->externalBuffers.construct()->raw)
+            // No need to initialize internalBuffer.
             , state(Message::State::IN_PROGRESS)
             , bucketNode(this)
             , receivedMessageNode(this)
@@ -166,13 +168,13 @@ class Receiver {
             , needTimeouts(numExpectedPackets > 1)
             , resendTimeout(this)
             , scheduledMessageInfo(this, messageLength)
-        {}
+        {
+            assert(messageLength <= MAX_MESSAGE_LENGTH);
+        }
 
         virtual ~Message();
-        size_t get(size_t offset, void* destination,
-                   size_t count) const override;
+        void* data() const override;
         size_t length() const override;
-        void strip(size_t count) override;
         void release() override;
 
         /**
@@ -186,9 +188,6 @@ class Receiver {
       private:
         /// Define the maximum number of packets that a message can hold.
         static const int MAX_MESSAGE_PACKETS = 1024;
-
-        Driver::Packet* getPacket(size_t index) const;
-        bool setPacket(size_t index, Driver::Packet* packet);
 
         /// Driver from which packets were received and to which they should be
         /// returned when this message is no longer needed.
@@ -220,22 +219,23 @@ class Receiver {
         /// GRANTs to be sent.
         const bool scheduled;
 
-        /// First byte where data is or will go if empty.
-        int start;
+        /// Number of bytes in this Message.
+        const int messageLength;
 
-        /// Number of bytes in this Message including any stripped bytes.
-        int messageLength;
+        /// Protects numPackets and occupied.
+        SpinLock mutex;
 
         /// Number of packets currently contained in this message.
         int numPackets;
 
-        /// Bit array representing which entires in the _packets_ array are set.
-        /// Used to avoid having to zero out the entire _packets_ array.
+        /// Bit array representing which packets in the message are received.
         std::bitset<MAX_MESSAGE_PACKETS> occupied;
 
-        /// Collection of Packet objects that make up this context's Message.
-        /// These Packets will be released when this context is destroyed.
-        Driver::Packet* packets[MAX_MESSAGE_PACKETS];
+        /// Pointer to the contiguous memory buffer serving as message storage.
+        char* const buffer;
+
+        /// Internal memory buffer used to store messages within 1KB.
+        char internalBuffer[1024];
 
         /// This message's current state.
         std::atomic<State> state;
@@ -276,6 +276,21 @@ class Receiver {
         ScheduledMessageInfo scheduledMessageInfo;
 
         friend class Receiver;
+    };
+
+    /**
+     * Memory buffer used to hold large messages that don't fit in Message's
+     * internal buffer.  It's basically a simple wrapper around an array so
+     * that it can be allocated from an ObjectPool.
+     *
+     * @tparam length
+     *      Number of bytes in the buffer.
+     */
+    template <size_t length>
+    struct MessageBuffer {
+
+        /// Buffer space.
+        char raw[length];
     };
 
     /**
@@ -455,6 +470,9 @@ class Receiver {
     void unschedule(Message* message, const SpinLock::Lock& lock);
     void updateSchedule(Message* message, const SpinLock::Lock& lock);
 
+    /// Define the maximum number of bytes within a message.
+    static const int MAX_MESSAGE_LENGTH = 1u << 20u;
+
     /// Driver with which all packets will be sent and received.  This driver
     /// is chosen by the Transport that owns this Receiver.
     Driver* const driver;
@@ -499,6 +517,9 @@ class Receiver {
 
     /// Used to allocate Message objects.
     ObjectPool<Message> messageAllocator;
+
+    /// Used to allocate large memory buffers outside the Message struct.
+    ObjectPool<MessageBuffer<MAX_MESSAGE_LENGTH>> externalBuffers;
 
     /// Protects the timeout manager.
     SpinLock timeoutMutex;

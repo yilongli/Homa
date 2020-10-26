@@ -35,7 +35,7 @@ namespace Util {
 /// Return the number of elements in a statically allocated array.
 // This was taken from the RAMCloud project.
 template <typename T, size_t length>
-constexpr uint32_t
+constexpr int
 arrayLength(const T (&)[length])
 {
     return length;

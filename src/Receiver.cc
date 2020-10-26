@@ -49,6 +49,7 @@ Receiver::Receiver(Driver* driver, Policy::Manager* policyManager,
     , receivedMessages()
     , granting()
     , messageAllocator()
+    , externalBuffers()
     , timeoutMutex()
     , resendTimeouts(resendIntervalCycles)
 {}
@@ -133,7 +134,7 @@ Receiver::handleIncomingPacket(Driver::Packet* packet, uint64_t now,
             message = messageAllocator.construct(
                 this, driver, sizeof(Protocol::Packet::DataHeader),
                 messageLength, header->common.messageId, srcAddress,
-                numUnscheduledPackets, header->needAck);
+                numUnscheduledPackets, (bool)header->needAck);
             Perf::counters.allocated_rx_messages.add(1);
 
             // Start tracking the message.
@@ -170,12 +171,8 @@ Receiver::handleIncomingPacket(Driver::Packet* packet, uint64_t now,
  *      The rdtsc cycle that should be considered the "current" time.
  * @param sourceIp
  *      Source IP address of the packet.
- * @return
- *      True if the Receiver decides to take ownership of the packet. False
- *      if the Receiver has no more use of this packet and it can be released
- *      to the driver.
  */
-bool
+void
 Receiver::handleDataPacket(Driver::Packet* packet, uint64_t now,
                            IpAddress sourceIp)
 {
@@ -189,30 +186,25 @@ Receiver::handleDataPacket(Driver::Packet* packet, uint64_t now,
     assert(message->source.port == be16toh(header->common.prefix.sport));
     assert(message->messageLength == Util::downCast<int>(header->totalLength));
 
-    // Add the packet
-    bool packetAdded = message->setPacket(header->index, packet);
-    if (!packetAdded) {
+    // Copy the packet's payload into the message buffer if this packet hasn't
+    // been received before.
+    SpinLock::UniqueLock msg_lock(message->mutex);
+    uint16_t index = header->index;
+    if (message->occupied.test(index)) {
         // Must be a duplicate packet; drop it.
-        return false;
+        return;
     }
-
-    // Update schedule for scheduled messages.
-    if (message->scheduled) {
-        SpinLock::Lock lock_scheduler(schedulerMutex);
-        ScheduledMessageInfo* info = &message->scheduledMessageInfo;
-        // Update the schedule if the message is still being scheduled
-        // (i.e. still linked to a scheduled peer).
-        if (info->peer != nullptr) {
-            int packetDataBytes =
-                packet->length - message->TRANSPORT_HEADER_LENGTH;
-            assert(info->bytesRemaining >= packetDataBytes);
-            info->bytesRemaining -= packetDataBytes;
-            updateSchedule(message, lock_scheduler);
-        }
-    }
+    message->occupied.set(index);
+    message->numPackets++;
+    bool messageComplete = (message->numPackets == message->numExpectedPackets);
+    std::memcpy(
+        message->buffer + index * message->PACKET_DATA_LENGTH,
+        static_cast<char*>(packet->payload) + message->TRANSPORT_HEADER_LENGTH,
+        packet->length - message->TRANSPORT_HEADER_LENGTH);
+    msg_lock.unlock();
 
     // Complete the message if all packets have been received.
-    if (message->numPackets == message->numExpectedPackets) {
+    if (messageComplete) {
         message->state.store(Message::State::COMPLETED,
                              std::memory_order_release);
         if (message->needTimeouts) {
@@ -231,8 +223,23 @@ Receiver::handleDataPacket(Driver::Packet* packet, uint64_t now,
             ControlPacket::send<Protocol::Packet::AckHeader>(
                 driver, message->source.ip, message->id);
         }
+        return;
     }
-    return true;
+
+    // Update schedule for scheduled messages.
+    if (message->scheduled) {
+        SpinLock::Lock lock_scheduler(schedulerMutex);
+        ScheduledMessageInfo* info = &message->scheduledMessageInfo;
+        // Update the schedule if the message is still being scheduled
+        // (i.e. still linked to a scheduled peer).
+        if (info->peer != nullptr) {
+            int packetDataBytes =
+                packet->length - message->TRANSPORT_HEADER_LENGTH;
+            assert(info->bytesRemaining >= packetDataBytes);
+            info->bytesRemaining -= packetDataBytes;
+            updateSchedule(message, lock_scheduler);
+        }
+    }
 }
 
 /**
@@ -429,8 +436,9 @@ Receiver::checkTimeouts()
             resendPriority = 0;
         }
 
+        SpinLock::Lock msg_lock(message->mutex);
         for (int i = 0; i < grantIndexLimit; ++i) {
-            if (message->getPacket(i) == nullptr) {
+            if (!message->occupied.test(i)) {
                 // Unreceived packet
                 if (num == 0) {
                     // First unreceived packet
@@ -503,76 +511,21 @@ Receiver::Message::~Message()
         receiver->receivedMessages.queue.remove(&receivedMessageNode);
     }
 
-    // Find contiguous ranges of packets and release them back to the
-    // driver.
-    int num = 0;
-    int index = 0;
-    int packetsFound = 0;
-    for (int i = 0; i < MAX_MESSAGE_PACKETS && packetsFound < numPackets; ++i) {
-        if (occupied.test(i)) {
-            if (num == 0) {
-                // First packet in new region.
-                index = i;
-            }
-            ++num;
-            ++packetsFound;
-        } else {
-            if (num != 0) {
-                // End of region; release the last region.
-                driver->releasePackets(&packets[index], num);
-                num = 0;
-            }
-        }
-    }
-    if (num != 0) {
-        // Release the last region (if any).
-        driver->releasePackets(&packets[index], num);
+    // Release the external buffer, if any.
+    if (buffer != internalBuffer) {
+        MessageBuffer<MAX_MESSAGE_LENGTH>* externalBuf =
+            (MessageBuffer<MAX_MESSAGE_LENGTH>*)buffer;
+        receiver->externalBuffers.destroy(externalBuf);
     }
 }
 
 /**
- * @copydoc Homa::InMessage::get()
+ * @copydoc Homa::InMessage::data()
  */
-size_t
-Receiver::Message::get(size_t offset, void* destination, size_t count) const
+void*
+Receiver::Message::data() const
 {
-    // This operation should be performed with the offset relative to the
-    // logical beginning of the Message.
-    int _offset = Util::downCast<int>(offset);
-    int _count = Util::downCast<int>(count);
-    int realOffset = _offset + start;
-    int packetIndex = realOffset / PACKET_DATA_LENGTH;
-    int packetOffset = realOffset % PACKET_DATA_LENGTH;
-    int bytesCopied = 0;
-
-    // Offset is passed the end of the message.
-    if (realOffset >= messageLength) {
-        return 0;
-    }
-
-    if (realOffset + _count > messageLength) {
-        _count = messageLength - realOffset;
-    }
-
-    while (bytesCopied < _count) {
-        uint32_t bytesToCopy =
-            std::min(_count - bytesCopied, PACKET_DATA_LENGTH - packetOffset);
-        Driver::Packet* packet = getPacket(packetIndex);
-        if (packet != nullptr) {
-            char* source = static_cast<char*>(packet->payload);
-            source += packetOffset + TRANSPORT_HEADER_LENGTH;
-            std::memcpy(static_cast<char*>(destination) + bytesCopied, source,
-                        bytesToCopy);
-        } else {
-            ERROR("Message is missing data starting at packet index %u",
-                  packetIndex);
-            break;
-        }
-        bytesCopied += bytesToCopy;
-        packetIndex++;
-        packetOffset = 0;
-    }
-    return bytesCopied;
+    return buffer;
 }
 
 /**
@@ -581,16 +534,7 @@ Receiver::Message::get(size_t offset, void* destination, size_t count) const
 size_t
 Receiver::Message::length() const
 {
-    return Util::downCast<size_t>(messageLength - start);
-}
-
-/**
- * @copydoc Homa::InMessage::strip()
- */
-void
-Receiver::Message::strip(size_t count)
-{
-    start = std::min(start + Util::downCast<int>(count), messageLength);
+    return Util::downCast<size_t>(messageLength);
 }
 
 /**
@@ -600,52 +544,6 @@ void
 Receiver::Message::release()
 {
     bucket->receiver->messageAllocator.destroy(this);
-}
-
-/**
- * Return the Packet with the given index.
- *
- * @param index
- *      A Packet's index in the array of packets that form the message.
- *      "packet index = "packet message offset" / PACKET_DATA_LENGTH
- * @return
- *      Pointer to a Packet at the given index if it exists; nullptr otherwise.
- */
-Driver::Packet*
-Receiver::Message::getPacket(size_t index) const
-{
-    if (occupied.test(index)) {
-        return packets[index];
-    }
-    return nullptr;
-}
-
-/**
- * Store the given packet as the Packet of the given index if one does not
- * already exist.
- *
- * Responsibly for releasing the given Packet is passed to this context if the
- * Packet is stored (returns true).
- *
- * @param index
- *      The Packet's index in the array of packets that form the message.
- *      "packet index = "packet message offset" / PACKET_DATA_LENGTH
- * @param packet
- *      The packet pointer that should be stored.
- * @return
- *      True if the packet was stored; false if a packet already exists (the new
- *      packet is not stored).
- */
-bool
-Receiver::Message::setPacket(size_t index, Driver::Packet* packet)
-{
-    if (occupied.test(index)) {
-        return false;
-    }
-    packets[index] = packet;
-    occupied.set(index);
-    numPackets++;
-    return true;
 }
 
 /**
